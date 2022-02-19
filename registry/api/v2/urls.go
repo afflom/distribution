@@ -162,6 +162,29 @@ func (ub *URLBuilder) BuildManifestURL(ref reference.Named) (string, error) {
 	return manifestURL.String(), nil
 }
 
+// BuildUCDURL constructs a url for the UCD manifest identified by name and
+// reference. The argument reference may be either a tag or digest.
+func (ub *URLBuilder) BuildUCDURL(ref reference.Named) (string, error) {
+	route := ub.cloneRoute(RouteNameUCD)
+
+	tagOrDigest := ""
+	switch v := ref.(type) {
+	case reference.Tagged:
+		tagOrDigest = v.Tag()
+	case reference.Digested:
+		tagOrDigest = v.Digest().String()
+	default:
+		return "", fmt.Errorf("reference must have a tag or digest")
+	}
+
+	ucdURL, err := route.URL("name", ref.Name(), "reference", tagOrDigest)
+	if err != nil {
+		return "", err
+	}
+
+	return ucdURL.String(), nil
+}
+
 // BuildBlobURL constructs the url for the blob identified by name and dgst.
 func (ub *URLBuilder) BuildBlobURL(ref reference.Canonical) (string, error) {
 	route := ub.cloneRoute(RouteNameBlob)

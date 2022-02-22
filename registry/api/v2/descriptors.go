@@ -743,8 +743,8 @@ var routeDescriptors = []RouteDescriptor{
 									digestHeader,
 								},
 								Body: BodyDescriptor{
-									ContentType: "<media type of manifest>",
-									Format:      manifestBody,
+									ContentType: "<media type of blob>",
+									Format:      "<blob binary data>",
 								},
 							},
 						},

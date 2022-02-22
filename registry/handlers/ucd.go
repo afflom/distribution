@@ -1,7 +1,6 @@
 package handlers
 
 import (
-	"fmt"
 	"net/http"
 
 	"github.com/distribution/distribution/v3"
@@ -88,16 +87,16 @@ func (uh manifestHandler) GetUCD(w http.ResponseWriter, r *http.Request) {
 		Digest:  blobDigest,
 	}
 
-	blobs := blobHandler.Repository.Blobs(blobHandler)
-	desc, err := blobs.Stat(blobHandler, blobHandler.Digest)
+	//blobs := blobHandler.Repository.Blobs(blobHandler)
+	/*desc, err := blobs.Stat(blobHandler, blobHandler.Digest)
 	if err != nil {
 		uh.Errors = append(uh.Errors, err)
 		return
 	}
-	blen := desc.Size
-
+	//blen := desc.Size
+    */
 	w.Header().Set("Content-Type", blobMt)
-	w.Header().Set("Content-Length", fmt.Sprint(blen))
+	w.WriteHeader(http.StatusOK)
 	blobHandler.GetBlob(w, r)
 
 }

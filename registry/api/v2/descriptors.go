@@ -716,6 +716,61 @@ var routeDescriptors = []RouteDescriptor{
 			},
 		},
 	},
+	{
+		Name:        RouteNameUCD,
+		Path:        "/v2/{name:" + reference.NameRegexp.String() + "}/ucd/{reference:" + reference.TagRegexp.String() + "|" + digest.DigestRegexp.String() + "}",
+		Entity:      "cd",
+		Description: "Retrieve UCD formatted content.",
+		Methods: []MethodDescriptor{
+			{
+				Method:      "GET",
+				Description: "Fetch the UCD formatted content identified by `name` and `reference` where `reference` can be a tag or digest. A `HEAD` request can also be issued to this endpoint to obtain resource information without receiving all data.",
+				Requests: []RequestDescriptor{
+					{
+						Headers: []ParameterDescriptor{
+							hostHeader,
+							authHeader,
+						},
+						PathParameters: []ParameterDescriptor{
+							nameParameterDescriptor,
+							referenceParameterDescriptor,
+						},
+						Successes: []ResponseDescriptor{
+							{
+								Description: "The UCD formatted content identified by `name` and `reference`. The contents can be used to identify and resolve resources required to run the specified image.",
+								StatusCode:  http.StatusOK,
+								Headers: []ParameterDescriptor{
+									digestHeader,
+								},
+								Body: BodyDescriptor{
+									ContentType: "<media type of manifest>",
+									Format:      manifestBody,
+								},
+							},
+						},
+						Failures: []ResponseDescriptor{
+							{
+								Description: "The name or reference was invalid.",
+								StatusCode:  http.StatusBadRequest,
+								ErrorCodes: []errcode.ErrorCode{
+									ErrorCodeNameInvalid,
+									ErrorCodeTagInvalid,
+								},
+								Body: BodyDescriptor{
+									ContentType: "application/json",
+									Format:      errorsBody,
+								},
+							},
+							unauthorizedResponseDescriptor,
+							repositoryNotFoundResponseDescriptor,
+							deniedResponseDescriptor,
+							tooManyRequestsDescriptor,
+						},
+					},
+				},
+			},
+		},
+	},
 
 	{
 		Name:        RouteNameBlob,

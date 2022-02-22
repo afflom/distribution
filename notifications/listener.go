@@ -16,6 +16,7 @@ type ManifestListener interface {
 	ManifestPushed(repo reference.Named, sm distribution.Manifest, options ...distribution.ManifestServiceOption) error
 	ManifestPulled(repo reference.Named, sm distribution.Manifest, options ...distribution.ManifestServiceOption) error
 	ManifestDeleted(repo reference.Named, dgst digest.Digest) error
+	UCDManifestPulled(repo reference.Named, sm distribution.Manifest, options ...distribution.ManifestServiceOption) error
 }
 
 // BlobListener describes a listener that can respond to layer related events.
@@ -90,6 +91,10 @@ type manifestServiceListener struct {
 	distribution.ManifestService
 	parent *repositoryListener
 }
+type UCDmanifestServiceListener struct {
+	distribution.ManifestService
+	parent *repositoryListener
+}
 
 func (msl *manifestServiceListener) Delete(ctx context.Context, dgst digest.Digest) error {
 	err := msl.ManifestService.Delete(ctx, dgst)
@@ -106,6 +111,17 @@ func (msl *manifestServiceListener) Get(ctx context.Context, dgst digest.Digest,
 	sm, err := msl.ManifestService.Get(ctx, dgst, options...)
 	if err == nil {
 		if err := msl.parent.listener.ManifestPulled(msl.parent.Repository.Named(), sm, options...); err != nil {
+			dcontext.GetLogger(ctx).Errorf("error dispatching manifest pull to listener: %v", err)
+		}
+	}
+
+	return sm, err
+}
+
+func (umsl *UCDmanifestServiceListener) Get(ctx context.Context, dgst digest.Digest, options ...distribution.ManifestServiceOption) (distribution.Manifest, error) {
+	sm, err := umsl.ManifestService.Get(ctx, dgst, options...)
+	if err == nil {
+		if err := umsl.parent.listener.UCDManifestPulled(umsl.parent.Repository.Named(), sm, options...); err != nil {
 			dcontext.GetLogger(ctx).Errorf("error dispatching manifest pull to listener: %v", err)
 		}
 	}

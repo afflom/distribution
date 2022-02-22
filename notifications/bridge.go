@@ -27,6 +27,7 @@ var _ Listener = &bridge{}
 type URLBuilder interface {
 	BuildManifestURL(name reference.Named) (string, error)
 	BuildBlobURL(ref reference.Canonical) (string, error)
+	BuildUCDURL(ref reference.Named) (string, error)
 }
 
 // NewBridge returns a notification listener that writes records to sink,
@@ -73,6 +74,21 @@ func (b *bridge) ManifestPushed(repo reference.Named, sm distribution.Manifest, 
 
 func (b *bridge) ManifestPulled(repo reference.Named, sm distribution.Manifest, options ...distribution.ManifestServiceOption) error {
 	manifestEvent, err := b.createManifestEvent(EventActionPull, repo, sm)
+	if err != nil {
+		return err
+	}
+
+	for _, option := range options {
+		if opt, ok := option.(distribution.WithTagOption); ok {
+			manifestEvent.Target.Tag = opt.Tag
+			break
+		}
+	}
+	return b.sink.Write(*manifestEvent)
+}
+
+func (b *bridge) UCDManifestPulled(repo reference.Named, sm distribution.Manifest, options ...distribution.ManifestServiceOption) error {
+	manifestEvent, err := b.createUCDEvent(EventActionPull, repo, sm)
 	if err != nil {
 		return err
 	}
@@ -199,6 +215,42 @@ func (b *bridge) createBlobEvent(action string, repo reference.Named, desc distr
 	}
 
 	event.Target.URL, err = b.ub.BuildBlobURL(ref)
+	if err != nil {
+		return nil, err
+	}
+
+	return event, nil
+}
+
+func (b *bridge) createUCDEvent(action string, repo reference.Named, sm distribution.Manifest) (*Event, error) {
+	event := b.createEvent(action)
+	event.Target.Repository = repo.Name()
+
+	mt, p, err := sm.Payload()
+	if err != nil {
+		return nil, err
+	}
+
+	// Ensure we have the canonical manifest descriptor here
+	manifest, desc, err := distribution.UnmarshalManifest(mt, p)
+	if err != nil {
+		return nil, err
+	}
+
+	event.Target.MediaType = mt
+	event.Target.Length = desc.Size
+	event.Target.Size = desc.Size
+	event.Target.Digest = desc.Digest
+	if b.includeReferences {
+		event.Target.References = append(event.Target.References, manifest.References()...)
+	}
+
+	ref, err := reference.WithDigest(repo, event.Target.Digest)
+	if err != nil {
+		return nil, err
+	}
+
+	event.Target.URL, err = b.ub.BuildUCDURL(ref)
 	if err != nil {
 		return nil, err
 	}

@@ -252,3 +252,26 @@ func appendValuesURL(u *url.URL, values ...url.Values) *url.URL {
 	u.RawQuery = merged.Encode()
 	return u
 }
+
+// BuildManifestURL constructs a url for the manifest identified by name and
+// reference. The argument reference may be either a tag or digest.
+func (ub *URLBuilder) BuildUCDURL(ref reference.Named) (string, error) {
+	route := ub.cloneRoute(RouteNameUCD)
+
+	tagOrDigest := ""
+	switch v := ref.(type) {
+	case reference.Tagged:
+		tagOrDigest = v.Tag()
+	case reference.Digested:
+		tagOrDigest = v.Digest().String()
+	default:
+		return "", fmt.Errorf("reference must have a tag or digest")
+	}
+
+	manifestURL, err := route.URL("name", ref.Name(), "reference", tagOrDigest)
+	if err != nil {
+		return "", err
+	}
+
+	return manifestURL.String(), nil
+}

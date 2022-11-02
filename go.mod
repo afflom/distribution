@@ -74,3 +74,5 @@ require (
 	google.golang.org/grpc v1.31.0 // indirect
 	google.golang.org/protobuf v1.26.0 // indirect
 )
+
+require go.etcd.io/bbolt v1.3.2

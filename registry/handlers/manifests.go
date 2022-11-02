@@ -18,6 +18,7 @@ import (
 	v2 "github.com/distribution/distribution/v3/registry/api/v2"
 	"github.com/distribution/distribution/v3/registry/auth"
 	"github.com/distribution/distribution/v3/registry/storage/driver"
+	"github.com/distribution/distribution/v3/uor"
 	"github.com/gorilla/handlers"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
@@ -402,6 +403,10 @@ func (imh *manifestHandler) PutManifest(w http.ResponseWriter, r *http.Request) 
 		// happen. We'll log the error here but proceed as if it worked. Worst
 		// case, we set an empty location header.
 		dcontext.GetLogger(imh).Errorf("error building manifest url from digest: %v", err)
+	}
+
+	if err := uor.WriteDB(manifest, imh.Digest, imh.Repository, *imh.database); err != nil {
+		dcontext.GetLogger(imh).Errorf("error writing attributes to database: %v", err)
 	}
 
 	w.Header().Set("Location", location)

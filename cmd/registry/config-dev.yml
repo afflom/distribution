@@ -24,14 +24,14 @@ storage:
     cache:
         blobdescriptor: inmemory
     filesystem:
-        rootdirectory: /var/lib/registry
+        rootdirectory: ./testdir
     maintenance:
         uploadpurging:
             enabled: false
 http:
-    addr: :5000
+    addr: :5001
     debug:
-        addr: :5001
+        addr: :5002
         prometheus:
             enabled: true
             path: /metrics

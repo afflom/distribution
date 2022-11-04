@@ -1595,6 +1595,47 @@ var routeDescriptors = []RouteDescriptor{
 			},
 		},
 	},
+	{
+		Name:        RouteNameAttributes,
+		Path:        "/v2/attributes",
+		Entity:      "Attributes",
+		Description: "List content matching an attribute query",
+		Methods: []MethodDescriptor{
+			{
+				Method:      "GET",
+				Description: "Retrieve a sorted, OCI Index Manifest of content resolved from an attribute query.",
+				Requests: []RequestDescriptor{
+					{
+						Name:        "Attributes Fetch",
+						Description: "Request an unabridged list of content matching an attribute query.",
+						Successes: []ResponseDescriptor{
+							{
+								Description: "Returns the unabridged list of content as a json response.",
+								StatusCode:  http.StatusOK,
+								Headers: []ParameterDescriptor{
+									{
+										Name:        "Content-Length",
+										Type:        "integer",
+										Description: "Length of the JSON response body.",
+										Format:      "<length>",
+									},
+								},
+								Body: BodyDescriptor{
+									ContentType: "application/json",
+									Format: `{
+	"repositories": [
+		<name>,
+		...
+	]
+}`,
+								},
+							},
+						},
+					},
+				},
+			},
+		},
+	},
 }
 
 var routeDescriptorsMap map[string]RouteDescriptor

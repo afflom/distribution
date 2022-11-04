@@ -23,7 +23,7 @@ type Result struct {
 	AttribKey string          `json:"attribkey"`
 	AttribVal json.RawMessage `json:"attribval"`
 	Namespace string          `json:"namespace"`
-	Digest    string          `json:"digest"`
+	Digest    digest.Digest   `json:"digest"`
 }
 
 // ReadDB returns a ResulSet from an attribute Query of boltdb
@@ -42,11 +42,12 @@ func ReadDB(attribs AttributeSet, db *bolt.DB) ResultSet {
 				c := vb.Cursor()
 				for r, d := c.First(); d != nil; d, r = c.Next() {
 					fmt.Printf("A %s is %s.\n", d, r)
+					dd, _ := digest.Parse(string(d))
 					result := Result{
 						AttribKey: k,
 						AttribVal: av,
 						Namespace: string(r),
-						Digest:    string(d),
+						Digest:    dd,
 					}
 					resultSet = append(resultSet, result)
 				}
@@ -158,8 +159,8 @@ func Tempfile() string {
 	return f.Name()
 }
 
-func convertAnnotationsToAttributes(annotations string) (map[string][]json.RawMessage, error) {
-	specAttributes := map[string][]json.RawMessage{}
+func convertAnnotationsToAttributes(annotations string) (AttributeSet, error) {
+	specAttributes := AttributeSet{}
 
 	var jsonData map[string]interface{}
 

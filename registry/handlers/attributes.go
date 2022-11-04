@@ -46,15 +46,15 @@ func (ch *attributesHandler) GetAttributes(w http.ResponseWriter, r *http.Reques
 		resultm[result.Digest] = attrib
 	}
 
-	for _, result := range results {
+	for digest, result := range resultm {
 
-		ann, _ := json.Marshal(resultm[result.Digest])
+		ann, _ := json.Marshal(result)
 		uorAttrib := make(map[string]string)
 		uorAttrib["uor.attributes"] = string(ann)
 		desc := v1.Descriptor{
 			MediaType:   v1.MediaTypeImageIndex,
 			Size:        0,
-			Digest:      result.Digest,
+			Digest:      digest,
 			Annotations: uorAttrib,
 			Platform:    nil,
 			URLs:        nil,

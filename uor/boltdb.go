@@ -6,6 +6,7 @@ import (
 	"io/ioutil"
 	"log"
 	"os"
+	"strings"
 
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 
@@ -27,27 +28,44 @@ type Result struct {
 }
 
 // ReadDB returns a ResulSet from an attribute Query of boltdb
-func ReadDB(attribs AttributeSet, db *bolt.DB) ResultSet {
+func ReadDB(attribquery map[string]json.RawMessage, db *bolt.DB) ResultSet {
+
+	attribs := make(AttributeSet)
+
+	for k, v := range attribquery {
+
+		attribs[k] = append(attribs[k], v)
+	}
 
 	var resultSet []Result
 
 	log.Printf("Attribs: %s", attribs)
-	for k, v := range attribs {
-		log.Printf("Key: %s, Val: %s", k, v)
+	for attributeKey, attributeValues := range attribs {
+		log.Printf("Key: %s, Val: %s", attributeKey, attributeValues)
+		// Open a new read-only transaction
 		if err := db.View(func(tx *bolt.Tx) error {
 			log.Printf("Transaction Started")
-			ak := tx.Bucket([]byte(k))
-			for _, av := range v {
-				vb := ak.Bucket([]byte(av))
-				c := vb.Cursor()
-				for r, d := c.First(); d != nil; d, r = c.Next() {
-					fmt.Printf("A %s is %s.\n", d, r)
-					dd, _ := digest.Parse(string(d))
+			// Parse the schema ID from the key name
+			keyname := strings.Split(attributeKey, ".")
+
+			// Enter the schema id bucket
+			schemaBucket := tx.Bucket([]byte(keyname[0]))
+			// Enter the key name bucket
+			attributeKeyBucket := schemaBucket.Bucket([]byte(keyname[1]))
+			for _, attributeValue := range attributeValues {
+				// Enter the value bucket
+				valueBucket := attributeKeyBucket.Bucket([]byte(attributeValue))
+				// query for kv pairs in the value bucket
+				c := valueBucket.Cursor()
+				// cursor loop returns namespace and digest of the match
+				for namespace, d := c.First(); d != nil; d, namespace = c.Next() {
+					fmt.Printf("A %s is %s.\n", d, namespace)
+					digest, _ := digest.Parse(string(d))
 					result := Result{
-						AttribKey: k,
-						AttribVal: av,
-						Namespace: string(r),
-						Digest:    dd,
+						AttribKey: attributeKey,
+						AttribVal: attributeValue,
+						Namespace: string(namespace),
+						Digest:    digest,
 					}
 					resultSet = append(resultSet, result)
 				}
@@ -64,7 +82,7 @@ func ReadDB(attribs AttributeSet, db *bolt.DB) ResultSet {
 
 func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribution.Repository, db bolt.DB) error {
 
-	// todo(afflom): handle manifests with the other manifest handling logic
+	// Get manifest
 	_, payload, err := manifest.Payload()
 	if err != nil {
 		log.Fatal(err)
@@ -80,6 +98,7 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 
 	// Parse the manifest and store each attribute as an entry in the map
 
+	// Get manifest attributes
 	for k, v := range man.Annotations {
 		// TODO(afflom): This key name needs to come from the UOR spec
 		if k == "uor.attributes" {
@@ -93,8 +112,9 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 		}
 	}
 
-	for _, d := range man.Layers {
-		for k, v := range d.Annotations {
+	// Get manifest's blob attributes
+	for _, descriptor := range man.Layers {
+		for k, v := range descriptor.Annotations {
 			// TODO(afflom): This key name needs to come from the UOR spec
 			if k == "uor.attributes" {
 				attribs, err = convertAnnotationsToAttributes(v)
@@ -108,26 +128,49 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 		}
 	}
 
-	for k, v := range attribs {
+	// Write attributes to database
+	// Database schema:
+	// - Top level bucket: SchemaID
+	//   - Nested bucket: attribute key
+	//     - Nested bucket: attribute value (json.RawMessage)
+	//       - Key/val pair: namespace=digest
+
+	for attributeKey, attributeValues := range attribs {
 
 		if err := db.Update(func(tx *bolt.Tx) error {
 
-			kb, err := tx.CreateBucketIfNotExists([]byte(k))
-			log.Printf("Top Level Bucket: %s", k)
+			// parse key for schema id
+
+			keyname := strings.Split(attributeKey, ".")
+			log.Printf("Top Level Bucket: %s", keyname[0])
+
+			// Create schema ID bucket
+			schemaBucket, err := tx.CreateBucketIfNotExists([]byte(keyname[0]))
 
 			if err != nil {
 				log.Fatal(err)
 			}
-			for _, av := range v {
-				vb, err := kb.CreateBucketIfNotExists([]byte(av))
-				log.Printf("Intermediary Bucket: %s", av)
+			log.Printf("key Bucket: %s", keyname[1])
+
+			// Create attribute key bucket
+			keyBucket, err := schemaBucket.CreateBucketIfNotExists([]byte(keyname[1]))
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			for _, attributeValue := range attributeValues {
+				// Create value bucket
+				valueBucket, err := keyBucket.CreateBucketIfNotExists([]byte(attributeValue))
+				log.Printf("value Bucket: %s", attributeValue)
 
 				if err != nil {
 					log.Fatal(err)
 				}
-				err = vb.Put([]byte(repo.Named().Name()), []byte(digest))
+				// write namespace and digest of manifest
+				err = valueBucket.Put([]byte(repo.Named().Name()), []byte(digest))
 				log.Printf("Writing %s as %s", repo.Named().Name(), digest)
-				c := vb.Cursor()
+				// Cursor produces debug output to server logs
+				c := valueBucket.Cursor()
 				for d, r := c.First(); d != nil; d, r = c.Next() {
 					fmt.Printf(" %s is %s.\n", d, r)
 				}
@@ -145,6 +188,7 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 }
 
 // tempfile returns a temporary file path.
+// todo(afflom): create the database file in the /v3/ directory adjacent to the /v2/ directory
 func Tempfile() string {
 	f, err := ioutil.TempFile("", "bolt-")
 	if err != nil {

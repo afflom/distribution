@@ -2,6 +2,8 @@ package handlers
 
 import (
 	"encoding/json"
+	"io/ioutil"
+	"log"
 	"net/http"
 
 	"github.com/distribution/distribution/v3/registry/api/errcode"
@@ -31,14 +33,37 @@ type attributesAPIResponse struct {
 
 func (ch *attributesHandler) GetAttributes(w http.ResponseWriter, r *http.Request) {
 
-	attribs := make(uor.AttributeSet)
+	// Receive the query
+	body, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		log.Fatalf("failed to get body: %v", err)
+	}
 
-	results := uor.ReadDB(attribs, ch.database)
+	// Change the query back into an attribute set
+	var attribs map[string]interface{}
+	err = json.Unmarshal(body, &attribs)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	attributeMap := map[string]json.RawMessage{}
+	for key, value := range attribs {
+		jsonValue, err := json.Marshal(value)
+		if err != nil {
+			log.Fatal(err)
+		}
+		attributeMap[key] = jsonValue
+	}
+
+	// Query the database
+
+	results := uor.ReadDB(attributeMap, ch.database)
 
 	var manifest v1.Index
 
 	resultm := make(map[digest.Digest]map[string][]byte)
 
+	// Deduplicate the database response
 	for _, result := range results {
 		jsn, _ := json.Marshal(&result.AttribVal)
 		attrib := make(map[string][]byte)
@@ -46,6 +71,7 @@ func (ch *attributesHandler) GetAttributes(w http.ResponseWriter, r *http.Reques
 		resultm[result.Digest] = attrib
 	}
 
+	// Write the index manifest with the resolved descriptors
 	for digest, result := range resultm {
 
 		ann, _ := json.Marshal(result)
@@ -64,10 +90,12 @@ func (ch *attributesHandler) GetAttributes(w http.ResponseWriter, r *http.Reques
 
 	}
 
+	// Return the response to the caller
+
 	w.Header().Set("Content-Type", "application/json")
 
 	enc := json.NewEncoder(w)
-	if err := enc.Encode(attributesAPIResponse{}); err != nil {
+	if err := enc.Encode(attributesAPIResponse{manifest}); err != nil {
 		ch.Errors = append(ch.Errors, errcode.ErrorCodeUnknown.WithDetail(err))
 		return
 	}

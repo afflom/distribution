@@ -1,5 +1,16 @@
 # Distribution
 
+This fork of CNCF Distribution adds the Attributes API endpoint extension. 
+
+Attributes endpoint instructions:
+
+1. Build: `make binaries`
+2. Run: `./bin/registry serve cmd/registry/config-dev.yml`
+3. Upload a UOR Collection
+4. Query API: Format your query as `map[schemaID]map[attributeKey]attributeValue` in a URL encoded string. For example:  `curl -v http://localhost:5001/v2/attributes?query=%7B%0A%22ai%22%3A%20%7B%22model_name%22%3A%20%22test%22%7D`
+
+
+_______________________________________________________
 The toolset to pack, ship, store, and deliver content.
 
 This repository's main product is the Open Source Registry implementation

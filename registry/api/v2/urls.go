@@ -2,6 +2,7 @@ package v2
 
 import (
 	"fmt"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -129,9 +130,11 @@ func (ub *URLBuilder) BuildCatalogURL(values ...url.Values) (string, error) {
 
 // BuildAttributesURL constructs a url get a catalog of repositories
 func (ub *URLBuilder) BuildAttributesURL(values ...url.Values) (string, error) {
-	route := ub.cloneRoute(RouteNameCatalog)
+	route := ub.cloneRoute(RouteNameAttributes)
 
 	AttributesURL, err := route.URL()
+
+	log.Printf("AttributesURL: %s", AttributesURL.String())
 	if err != nil {
 		return "", err
 	}

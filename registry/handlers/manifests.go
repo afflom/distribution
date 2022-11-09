@@ -405,7 +405,7 @@ func (imh *manifestHandler) PutManifest(w http.ResponseWriter, r *http.Request) 
 		dcontext.GetLogger(imh).Errorf("error building manifest url from digest: %v", err)
 	}
 
-	if err := uor.WriteDB(manifest, imh.Digest, imh.Repository, *imh.database); err != nil {
+	if err := uor.WriteDB(manifest, imh.Digest, imh.Repository, imh.database); err != nil {
 		dcontext.GetLogger(imh).Errorf("error writing attributes to database: %v", err)
 	}
 

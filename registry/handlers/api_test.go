@@ -79,6 +79,112 @@ func TestCheckAPI(t *testing.T) {
 	}
 }
 
+func TestAttributesAPI(t *testing.T) {
+	env := newTestEnv(t, false)
+	defer env.Shutdown()
+
+	values := url.Values{
+		"test1": []string{""},
+		"test2": []string{""}}
+
+	attributesURL, err := env.builder.BuildAttributesURL(values)
+	if err != nil {
+		t.Fatalf("unexpected error building catalog url: %v", err)
+	}
+
+	// -----------------------------------
+	// try to get an empty catalog
+	resp, err := http.Get(attributesURL)
+	if err != nil {
+		t.Fatalf("unexpected error issuing request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	checkResponse(t, "issuing catalog api check", resp, http.StatusOK)
+
+	var ctlg struct {
+		Repositories []string `json:"repositories"`
+	}
+
+	dec := json.NewDecoder(resp.Body)
+	if err := dec.Decode(&ctlg); err != nil {
+		t.Fatalf("error decoding fetched manifest: %v", err)
+	}
+
+	// we haven't pushed anything to the registry yet
+	if len(ctlg.Repositories) != 0 {
+		t.Fatalf("repositories has unexpected values")
+	}
+
+	if resp.Header.Get("Link") != "" {
+		t.Fatalf("repositories has more data when none expected")
+	}
+
+	// -----------------------------------
+	// push something to the registry and try again
+	images := []string{"foo/aaaa", "foo/bbbb", "foo/cccc"}
+
+	for _, image := range images {
+		createRepository(env, t, image, "sometag")
+	}
+
+	resp, err = http.Get(attributesURL)
+	if err != nil {
+		t.Fatalf("unexpected error issuing request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	checkResponse(t, "issuing catalog api check", resp, http.StatusOK)
+
+	dec = json.NewDecoder(resp.Body)
+	if err = dec.Decode(&ctlg); err != nil {
+		t.Fatalf("error decoding fetched manifest: %v", err)
+	}
+
+	link := resp.Header.Get("Link")
+	if link == "" {
+		t.Fatalf("repositories has less data than expected")
+	}
+	/*
+		newValues := checkLink(t, link, chunkLen, ctlg.Repositories[len(ctlg.Repositories)-1])
+
+		// -----------------------------------
+		// get the last chunk of data
+
+		attributesURL, err = env.builder.BuildCatalogURL(newValues)
+		if err != nil {
+			t.Fatalf("unexpected error building catalog url: %v", err)
+		}
+
+		resp, err = http.Get(attributesURL)
+		if err != nil {
+			t.Fatalf("unexpected error issuing request: %v", err)
+		}
+		defer resp.Body.Close()
+
+		checkResponse(t, "issuing catalog api check", resp, http.StatusOK)
+
+		dec = json.NewDecoder(resp.Body)
+		if err = dec.Decode(&ctlg); err != nil {
+			t.Fatalf("error decoding fetched manifest: %v", err)
+		}
+
+		if len(ctlg.Repositories) != 1 {
+			t.Fatalf("repositories has unexpected values")
+		}
+
+		lastImage := images[len(images)-1]
+		if !contains(ctlg.Repositories, lastImage) {
+			t.Fatalf("didn't find our repository '%s' in the catalog", lastImage)
+		}
+
+		link = resp.Header.Get("Link")
+		if link != "" {
+			t.Fatalf("catalog has unexpected data")
+		}
+	*/
+}
+
 // TestCatalogAPI tests the /v2/_catalog endpoint
 func TestCatalogAPI(t *testing.T) {
 	chunkLen := 2
@@ -94,13 +200,28 @@ func TestCatalogAPI(t *testing.T) {
 		t.Fatalf("unexpected error building catalog url: %v", err)
 	}
 
-	// -----------------------------------
-	// try to get an empty catalog
-	resp, err := http.Get(catalogURL)
+	attributesURL, err := env.builder.BuildAttributesURL(values)
+	if err != nil {
+		t.Fatalf("unexpected error building catalog url: %v", err)
+	}
+
+	resp, err := http.Get(attributesURL)
 	if err != nil {
 		t.Fatalf("unexpected error issuing request: %v", err)
 	}
 	defer resp.Body.Close()
+
+	checkResponse(t, "issuing catalog api check", resp, http.StatusOK)
+
+	// -----------------------------------
+	// try to get an empty catalog
+	resp1, err := http.Get(catalogURL)
+	if err != nil {
+		t.Fatalf("unexpected error issuing request: %v", err)
+	}
+	defer resp.Body.Close()
+
+	t.Logf("response: %v", resp1.Body)
 
 	checkResponse(t, "issuing catalog api check", resp, http.StatusOK)
 

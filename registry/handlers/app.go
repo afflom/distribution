@@ -38,7 +38,6 @@ import (
 	storagedriver "github.com/distribution/distribution/v3/registry/storage/driver"
 	"github.com/distribution/distribution/v3/registry/storage/driver/factory"
 	storagemiddleware "github.com/distribution/distribution/v3/registry/storage/driver/middleware"
-	"github.com/distribution/distribution/v3/uor"
 	"github.com/distribution/distribution/v3/version"
 	events "github.com/docker/go-events"
 	"github.com/docker/go-metrics"
@@ -314,7 +313,7 @@ func NewApp(ctx context.Context, config *configuration.Configuration) *App {
 		}
 	}
 
-	db, err := bolt.Open(uor.Tempfile(), 0666, nil)
+	db, err := bolt.Open("bolt-db", 0666, nil)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -918,7 +917,7 @@ func (app *App) nameRequired(r *http.Request) bool {
 		return true
 	}
 	routeName := route.GetName()
-	return routeName != v2.RouteNameBase && routeName != v2.RouteNameCatalog
+	return routeName != v2.RouteNameBase && routeName != v2.RouteNameCatalog && routeName != v2.RouteNameAttributes
 }
 
 // apiBase implements a simple yes-man for doing overall checks against the

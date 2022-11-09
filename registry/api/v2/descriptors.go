@@ -1606,8 +1606,10 @@ var routeDescriptors = []RouteDescriptor{
 				Description: "Retrieve a sorted, OCI Index Manifest of content resolved from an attribute query.",
 				Requests: []RequestDescriptor{
 					{
-						Name:        "Attributes Fetch",
-						Description: "Request an unabridged list of content matching an attribute query.",
+						Name:            "Attributes Fetch",
+						Description:     "Request an unabridged list of content matching an attribute query.",
+						QueryParameters: paginationParameters,
+
 						Successes: []ResponseDescriptor{
 							{
 								Description: "Returns the unabridged list of content as a json response.",
@@ -1622,12 +1624,7 @@ var routeDescriptors = []RouteDescriptor{
 								},
 								Body: BodyDescriptor{
 									ContentType: "application/json",
-									Format: `{
-	"repositories": [
-		<name>,
-		...
-	]
-}`,
+									Format:      manifestBody,
 								},
 							},
 						},

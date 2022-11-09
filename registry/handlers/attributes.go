@@ -2,7 +2,6 @@ package handlers
 
 import (
 	"encoding/json"
-	"io/ioutil"
 	"log"
 	"net/http"
 
@@ -14,6 +13,8 @@ import (
 )
 
 func attributesDispatcher(ctx *Context, r *http.Request) http.Handler {
+	log.Printf("Hit Attributes dispatcher!")
+
 	attributesHandler := &attributesHandler{
 		Context: ctx,
 	}
@@ -31,43 +32,52 @@ type attributesAPIResponse struct {
 	v1.Index
 }
 
-func (ch *attributesHandler) GetAttributes(w http.ResponseWriter, r *http.Request) {
+func (ah *attributesHandler) GetAttributes(w http.ResponseWriter, r *http.Request) {
+	log.Printf("Hit Attributes endpoint!")
 
 	// Receive the query
-	body, err := ioutil.ReadAll(r.Body)
-	if err != nil {
-		log.Fatalf("failed to get body: %v", err)
-	}
+	values := r.URL.Query()
+
+	log.Printf("values: %v", values)
 
 	// Change the query back into an attribute set
+	attributes := values.Get("query")
 	var attribs map[string]interface{}
-	err = json.Unmarshal(body, &attribs)
+	err := json.Unmarshal([]byte(attributes), &attribs)
+
 	if err != nil {
-		log.Fatal(err)
+		ah.Errors = append(ah.Errors, errcode.ErrorCodeUnknown.WithDetail(err))
+		return
 	}
 
 	attributeMap := map[string]json.RawMessage{}
 	for key, value := range attribs {
 		jsonValue, err := json.Marshal(value)
 		if err != nil {
-			log.Fatal(err)
+			ah.Errors = append(ah.Errors, errcode.ErrorCodeUnknown.WithDetail(err))
+			return
 		}
 		attributeMap[key] = jsonValue
 	}
 
 	// Query the database
 
-	results := uor.ReadDB(attributeMap, ch.database)
+	results, err := uor.ReadDB(attributeMap, ah.database)
+	if err != nil {
+		log.Printf("error reading db: %v", err)
+	}
 
 	var manifest v1.Index
 
-	resultm := make(map[digest.Digest]map[string][]byte)
+	resultm := make(map[digest.Digest]map[string][][]byte)
 
 	// Deduplicate the database response
-	for _, result := range results {
+	for i, result := range results {
+
 		jsn, _ := json.Marshal(&result.AttribVal)
-		attrib := make(map[string][]byte)
-		attrib[result.AttribKey] = jsn
+		attrib := make(map[string][][]byte)
+		log.Printf("deduplicating result %v", i)
+		attrib[result.AttribKey] = append(attrib[result.AttribKey], jsn)
 		resultm[result.Digest] = attrib
 	}
 
@@ -90,13 +100,15 @@ func (ch *attributesHandler) GetAttributes(w http.ResponseWriter, r *http.Reques
 
 	}
 
+	manifest.SchemaVersion = 2
+
 	// Return the response to the caller
 
 	w.Header().Set("Content-Type", "application/json")
 
 	enc := json.NewEncoder(w)
 	if err := enc.Encode(attributesAPIResponse{manifest}); err != nil {
-		ch.Errors = append(ch.Errors, errcode.ErrorCodeUnknown.WithDetail(err))
+		ah.Errors = append(ah.Errors, errcode.ErrorCodeUnknown.WithDetail(err))
 		return
 	}
 }

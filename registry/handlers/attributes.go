@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/distribution/distribution/v3/registry/api/errcode"
 	"github.com/distribution/distribution/v3/uor"
@@ -40,10 +41,17 @@ func (ah *attributesHandler) GetAttributes(w http.ResponseWriter, r *http.Reques
 
 	log.Printf("values: %v", values)
 
-	// Change the query back into an attribute set
-	attributes := values.Get("query")
+	// Query links
+	l := values.Get("links")
+
+	links := strings.Split(l, ",")
+
+	resolvedLinks, err := uor.LinkQuery(links, ah.database)
+
+	// Query by attributes
+	attributes := values.Get("attributes")
 	var attribs map[string]interface{}
-	err := json.Unmarshal([]byte(attributes), &attribs)
+	err = json.Unmarshal([]byte(attributes), &attribs)
 
 	if err != nil {
 		ah.Errors = append(ah.Errors, errcode.ErrorCodeUnknown.WithDetail(err))
@@ -62,10 +70,13 @@ func (ah *attributesHandler) GetAttributes(w http.ResponseWriter, r *http.Reques
 
 	// Query the database
 
-	results, err := uor.ReadDB(attributeMap, ah.database)
+	results, err := uor.AttributeQuery(attributeMap, ah.database)
 	if err != nil {
 		log.Printf("error reading db: %v", err)
 	}
+
+
+   
 
 	var manifest v1.Index
 
@@ -81,17 +92,35 @@ func (ah *attributesHandler) GetAttributes(w http.ResponseWriter, r *http.Reques
 		resultm[result.Digest] = attrib
 	}
 
-	// Write the index manifest with the resolved descriptors
-	for digest, result := range resultm {
+	// Resolve digests
+	// Query by digest
+	d := values.Get("digests")
 
-		ann, _ := json.Marshal(result)
-		uorAttrib := make(map[string]string)
-		uorAttrib["uor.attributes"] = string(ann)
+	digests := strings.Split(d, ",")
+
+	for k, _ := range resultm {
+		digests = append(digests, k.String())
+	}
+
+	resolvedDigests, err := uor.DigestQuery(digests, ah.database)
+
+   for rd, attrs := range resolvedDigests {
+	resultm[rd] = 
+   }
+
+
+
+	// Write the index manifest with the resolved descriptors
+	for digest, _ := range resultm {
+
+		//ann, _ := json.Marshal(result)
+		//uorAttrib := make(map[string]string)
+		//uorAttrib["uor.attributes"] = string(ann)
 		desc := v1.Descriptor{
 			MediaType:   v1.MediaTypeImageIndex,
 			Size:        0,
 			Digest:      digest,
-			Annotations: uorAttrib,
+			Annotations: nil,
 			Platform:    nil,
 			URLs:        nil,
 		}

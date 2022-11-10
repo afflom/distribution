@@ -8,6 +8,7 @@ import (
 	"os"
 
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"github.com/distribution/distribution/v3"
 	digest "github.com/opencontainers/go-digest"
@@ -16,18 +17,90 @@ import (
 
 type AttributeSet map[string][]json.RawMessage
 
-type ResultSet []Result
+type ResultSet []*Result
 
 type Result struct {
-	Schema    string          `json:"version"`
-	AttribKey string          `json:"attribkey"`
-	AttribVal json.RawMessage `json:"attribval"`
-	Namespace string          `json:"namespace"`
-	Digest    digest.Digest   `json:"digest"`
+	Schema    string              `json:"version"`
+	AttribKey string              `json:"attribkey"`
+	AttribVal json.RawMessage     `json:"attribval"`
+	Digest    digest.Digest       `json:"digest"`
+	Location  map[string][]string `json:"location"`
 }
 
-// ReadDB returns a ResulSet from an attribute Query of boltdb
-func ReadDB(attribquery map[string]json.RawMessage, db *bolt.DB) (ResultSet, error) {
+type Links map[digest.Digest]Target
+
+type Target struct {
+	Target digest.Digest       `json:"target"`
+	Hints  map[string][]string `json:"hints"`
+}
+
+func LinkQuery(digests []string, db *bolt.DB) (links Links, err error) {
+
+	if err := db.View(func(tx *bolt.Tx) error {
+		linksBucket := tx.Bucket([]byte("links"))
+		for _, ld := range digests {
+			if linksBucket == nil {
+				return err
+			}
+			digest := digest.FromString(ld)
+			targetBucket := linksBucket.Bucket([]byte(digest))
+
+			linkerCursor := targetBucket.Cursor()
+			for l, _ := linkerCursor.First(); l != nil; l, _ = linkerCursor.Next() {
+				parsedDigest := digest.Algorithm().FromBytes(l)
+				registryBucket := targetBucket.Bucket(l)
+				registryCursor := targetBucket.Cursor()
+				hints := make(map[string][]string)
+
+				for r, _ := registryCursor.First(); r != nil; r, _ = registryCursor.Next() {
+					namespaceBucket := registryBucket.Bucket(r)
+					namespaceCursor := namespaceBucket.Cursor()
+
+					for n, _ := namespaceCursor.First(); n != nil; n, _ = namespaceCursor.Next() {
+						hints[string(r)] = append(hints[string(r)], string(n))
+					}
+				}
+				links[parsedDigest] = Target{
+					Target: digest,
+					Hints:  hints,
+				}
+
+			}
+		}
+		return nil
+	}); err != nil {
+		return nil, nil
+	}
+	return nil, nil
+
+}
+
+func DigestQuery(digests []string, db *bolt.DB) (resolvedDigests map[digest.Digest][]string, err error) {
+
+	if err := db.View(func(tx *bolt.Tx) error {
+		digestsBucket := tx.Bucket([]byte("digests"))
+		for _, ld := range digests {
+			digest := digest.FromString(ld)
+
+			if digestsBucket == nil {
+				return fmt.Errorf("No matching records found for schema: %v", digest.String())
+			}
+			namespaceCursor := digestsBucket.Cursor()
+			for n, _ := namespaceCursor.First(); n != nil; n, _ = namespaceCursor.Next() {
+				resolvedDigests[digest] = append(resolvedDigests[digest], string(n))
+			}
+
+		}
+		return nil
+	}); err != nil {
+		return nil, nil
+	}
+	return nil, nil
+
+}
+
+// Attribute returns a ResulSet from an attribute Query of boltdb
+func AttributeQuery(attribquery map[string]json.RawMessage, db *bolt.DB) (ResultSet, error) {
 
 	attribs := make(AttributeSet)
 
@@ -36,7 +109,7 @@ func ReadDB(attribquery map[string]json.RawMessage, db *bolt.DB) (ResultSet, err
 		attribs[k] = append(attribs[k], v)
 	}
 
-	var resultSet []Result
+	var resultSet ResultSet
 
 	log.Printf("Attribs: %s", attribs)
 	for schemaid, attributeValues := range attribs {
@@ -73,25 +146,17 @@ func ReadDB(attribquery map[string]json.RawMessage, db *bolt.DB) (ResultSet, err
 						log.Printf("bucket stats: %v", digestCursor.Bucket().Stats().KeyN)
 						for d, _ := digestCursor.First(); d != nil; d, _ = digestCursor.Next() {
 							log.Printf("Found Digest: %v", string(d))
-							digestBucket := valueBucket.Bucket([]byte(d))
-							namespaceCursor := digestBucket.Cursor()
-
-							for n, _ := namespaceCursor.First(); n != nil; n, _ = namespaceCursor.Next() {
-								log.Printf("Found Namespace: %v", string(n))
-
-								digest, _ := digest.Parse(string(d))
-								result := Result{
-									Schema:    schemaid,
-									AttribKey: keyname,
-									AttribVal: attributeValue,
-									Namespace: string(n),
-									Digest:    digest,
-								}
-								resultSet = append(resultSet, result)
+							digest, _ := digest.Parse(string(d))
+							result := Result{
+								Schema:    schemaid,
+								AttribKey: keyname,
+								AttribVal: attributeValue,
+								Digest:    digest,
 							}
+							resultSet = append(resultSet, &result)
 						}
-						//fmt.Printf("Attribute: %s, Value:  %s, Manifest: %s", ak.Get([]byte(k)), av, value.Get([]byte(digest)))
 					}
+					//fmt.Printf("Attribute: %s, Value:  %s, Manifest: %s", ak.Get([]byte(k)), av, value.Get([]byte(digest)))
 				}
 			}
 			return nil
@@ -110,34 +175,69 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 	if err != nil {
 		log.Fatal(err)
 	}
-
 	man := ocispec.Manifest{}
-
 	if err := json.Unmarshal(payload, &man); err != nil {
 		log.Fatal(err)
 	}
 
-	attribs := make(map[string][]json.RawMessage)
-
 	// Parse the manifest and store each attribute as an entry in the map
 
-	// Get manifest attributes
+	// Get manifest attributes and link
+	log.Println("Get manifest attributes and link")
+
+	attribs := make(map[string][]json.RawMessage)
+
+	var link v1.Descriptor
+	linkAttribs := make(map[string][]json.RawMessage)
+
 	for k, v := range man.Annotations {
-		// TODO(afflom): This key name needs to come from the UOR spec
 		if k == "uor.attributes" {
-			attribs, err = convertAnnotationsToAttributes(v)
+			attrs, err := convertAnnotationsToAttributes(v)
 			if err != nil {
 				log.Fatal(err)
+			}
+			for sid, vals := range attrs {
+				attribs[sid] = append(attribs[sid], vals...)
+
 			}
 
 			log.Printf("writing collection attributes to manifest: %v", v)
 
-		} else {
-			//attribs[k] = append(attribs[k], []byte(v))
-			//log.Printf("writing collection attributes to manifest: %v", v)
-			continue
+		} else if k == "uor.link" {
+			var jsonData map[string]interface{}
 
+			if err := json.Unmarshal([]byte(v), &jsonData); err != nil {
+				return err
+			}
+
+			for _, value := range jsonData {
+				jsonValue, err := json.Marshal(value)
+				if err != nil {
+					return err
+				}
+				err = json.Unmarshal(jsonValue, &link)
+				if err != nil {
+					return err
+				}
+			}
+			// Get link attributes
+
+			for k, v := range link.Annotations {
+				if k == "uor.attributes" {
+					linkAttribs, err = convertAnnotationsToAttributes(v)
+					if err != nil {
+						log.Fatal(err)
+					}
+					// Add the attributes of the link to this manifest's attributeset
+					for sid, vals := range linkAttribs {
+						attribs[sid] = append(attribs[sid], vals...)
+
+					}
+				}
+				log.Printf("writing collection attributes to manifest: %v", v)
+			}
 		}
+
 	}
 
 	// Get manifest's blob attributes
@@ -145,9 +245,12 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 		for k, v := range descriptor.Annotations {
 			// TODO(afflom): This key name needs to come from the UOR spec
 			if k == "uor.attributes" {
-				attribs, err = convertAnnotationsToAttributes(v)
+				attrs, err := convertAnnotationsToAttributes(v)
 				if err != nil {
 					log.Fatal(err)
+				}
+				for sid, vals := range attrs {
+					attribs[sid] = append(attribs[sid], vals...)
 				}
 				log.Printf("writing collection attributes to manifest: %v", v)
 
@@ -161,28 +264,22 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 
 	log.Printf("Attributes to be written: %v", attribs)
 
-	// Write attributes to database
-	// Database schema:
+	// The is the schema for the attribute query partition
 	// - Top level bucket: SchemaID
 	//   - Nested bucket: attribute key
 	//     - Nested bucket: attribute value (json.RawMessage)
-	//       - Nested bucket: namespace
-	//         - kv pair: digest=mediatype
+	//         - Nested bucket: digest
 
 	for schemaid, attributes := range attribs {
 
 		if err := db.Update(func(tx *bolt.Tx) error {
 			log.Println("started update transaction")
-			// parse key for schema id
-
-			log.Printf("schemaid: %v", schemaid)
-
 			// Create schema ID bucket
 			schemaBucket, err := tx.CreateBucketIfNotExists([]byte(schemaid))
 			if err != nil {
 				log.Fatal(err)
 			}
-			log.Printf("Wrote: %s", schemaid)
+			log.Printf("Wrote schema: %s", schemaid)
 
 			var data map[string]interface{}
 
@@ -211,30 +308,107 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 					}
 					log.Printf("Wrote Value: %s", string(v))
 
-					digestBucket, err := valueBucket.CreateBucketIfNotExists([]byte(digest.Encoded()))
+					_, err = valueBucket.CreateBucketIfNotExists([]byte(digest.Encoded()))
 					if err != nil {
 						log.Fatal(err)
 					}
 					log.Printf("Wrote Digest: %s", digest.String())
-
-					// write namespace and digest of manifest
-					repoBucket, err := digestBucket.CreateBucketIfNotExists([]byte(repo.Named().Name()))
-					if err != nil {
-						log.Fatal(err)
-					}
-					log.Printf("Wrote Repo: %s", repo.Named().Name())
-					// Cursor produces debug output to server logs
-					c := repoBucket.Cursor()
-					for d, _ := c.First(); d != nil; d, _ = c.Next() {
-						log.Printf("Wrote: /%v/%v/%v/%v", schemaid, keyname, v, digest.String(), repo.Named().Name())
-					}
 
 					if err != nil {
 						log.Fatal(err)
 					}
 				}
 			}
+
+			// The is the schema for the digest query partition
+			// - Top level bucket: digests
+			//   - Nested bucket: digest
+			//     - Nested bucket: namespace
+
+			// Write digest query database partition
+			digestTopBucket, err := tx.CreateBucketIfNotExists([]byte("digests"))
+			if err != nil {
+				log.Fatal(err)
+			}
+			digestBucket, err := digestTopBucket.CreateBucketIfNotExists([]byte(digest))
+			if err != nil {
+				log.Fatal(err)
+			}
+			_, err = digestBucket.CreateBucketIfNotExists([]byte(repo.Named().Name()))
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			// The is the schema for the link query partition
+			// - Top level bucket: "links"
+			//   - Nested bucket: digest (link target)
+			//     - Nested bucket: digest (parent)
+			//     - Nested bucket: "registry" (nested under link target digest)
+			//       - Nested bucket: registryHint
+			//         - Nested bucket: namespaceHint
+
+			// Write link lookup database partition
+			if link.Digest.String() != "" {
+				linksTopBucket, err := tx.CreateBucketIfNotExists([]byte("links"))
+				if err != nil {
+					log.Fatal(err)
+				}
+
+				linkTargetBucket, err := linksTopBucket.CreateBucketIfNotExists([]byte(link.Digest))
+				if err != nil {
+					log.Fatal(err)
+				}
+
+				linkerBucket, err := linkTargetBucket.CreateBucketIfNotExists([]byte(digest))
+				if err != nil {
+					log.Fatal(err)
+				}
+
+				var ldata map[string]interface{}
+
+				hints := linkAttribs["core-link"]
+
+				var registry string
+				var namespace string
+
+				for _, hint := range hints {
+
+					err := json.Unmarshal(hint, &ldata)
+					if err != nil {
+						log.Fatal(err)
+					}
+					if data["registryHint"] != "" {
+						registryHint, err := json.Marshal(data["registryHint"])
+						if err != nil {
+							log.Fatal(err)
+						}
+						registry = string(registryHint)
+					}
+					if data["namespaceHint"] != "" {
+						namespaceHint, err := json.Marshal(data["namespaceHint"])
+						if err != nil {
+							log.Fatal(err)
+						}
+						namespace = string(namespaceHint)
+					}
+				}
+
+				registryHintBucket, err := linkerBucket.CreateBucketIfNotExists([]byte(registry))
+				if err != nil {
+					log.Fatal(err)
+				}
+
+				_, err = registryHintBucket.CreateBucketIfNotExists([]byte(namespace))
+				if err != nil {
+					log.Fatal(err)
+				}
+
+				return nil
+
+			}
+
 			return nil
+
 		}); err != nil {
 			log.Fatal(err)
 		}

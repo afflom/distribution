@@ -42,12 +42,18 @@ func LinkQuery(digests []string, db *bolt.DB) (links Links, err error) {
 			if linksBucket == nil {
 				return err
 			}
-			digest := digest.FromString(ld)
-			targetBucket := linksBucket.Bucket([]byte(digest))
+			dgst, err := digest.Parse(ld)
+			if err != nil {
+				return err
+			}
+			targetBucket := linksBucket.Bucket([]byte(dgst))
 
 			linkerCursor := targetBucket.Cursor()
 			for l, _ := linkerCursor.First(); l != nil; l, _ = linkerCursor.Next() {
-				parsedDigest := digest.Algorithm().FromBytes(l)
+				parsedDigest, err := digest.Parse(string(l))
+				if err != nil {
+					return err
+				}
 				registryBucket := targetBucket.Bucket(l)
 				registryCursor := targetBucket.Cursor()
 				hints := make(map[string][]string)
@@ -61,7 +67,7 @@ func LinkQuery(digests []string, db *bolt.DB) (links Links, err error) {
 					}
 				}
 				links[parsedDigest] = Target{
-					Target: digest,
+					Target: dgst,
 					Hints:  hints,
 				}
 
@@ -81,10 +87,13 @@ func DigestQuery(digests []string, db *bolt.DB) (map[digest.Digest][][]byte, err
 	if err := db.View(func(tx *bolt.Tx) error {
 		digestsBucket := tx.Bucket([]byte("digests"))
 		for _, ld := range digests {
-			digest := digest.FromString(ld)
+			digest, err := digest.Parse(ld)
+			if err != nil {
+				return err
+			}
 
 			if digestsBucket == nil {
-				return fmt.Errorf("No matching records found for schema: %v", digest.String())
+				return fmt.Errorf("no matching records found for schema: %v", digest.String())
 			}
 			namespaceCursor := digestsBucket.Cursor()
 			for n, _ := namespaceCursor.First(); n != nil; n, _ = namespaceCursor.Next() {
@@ -122,7 +131,7 @@ func AttributeQuery(attribquery map[string]json.RawMessage, db *bolt.DB) (Result
 			// Enter the schema id bucket
 			schemaBucket := tx.Bucket([]byte(schemaid))
 			if schemaBucket == nil {
-				return fmt.Errorf("No matching records found for schema: %v", schemaid)
+				return fmt.Errorf("no matching records found for schema: %v", schemaid)
 			}
 			log.Printf("schema: %v", schemaid)
 			// Enter the key name bucket
@@ -147,7 +156,14 @@ func AttributeQuery(attribquery map[string]json.RawMessage, db *bolt.DB) (Result
 						log.Printf("bucket stats: %v", digestCursor.Bucket().Stats().KeyN)
 						for d, _ := digestCursor.First(); d != nil; d, _ = digestCursor.Next() {
 							log.Printf("Found Digest: %v", string(d))
-							digest := digest.FromBytes(d)
+							digest, err := digest.Parse(string(d))
+							if err != nil {
+								return err
+							}
+							err = digest.Validate()
+							if err != nil {
+								return err
+							}
 							result := Result{
 								Schema:    schemaid,
 								AttribKey: keyname,
@@ -309,7 +325,7 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 					}
 					log.Printf("Wrote Value: %s", string(v))
 
-					_, err = valueBucket.CreateBucketIfNotExists([]byte(digest.Encoded()))
+					_, err = valueBucket.CreateBucketIfNotExists([]byte(digest))
 					if err != nil {
 						return err
 					}

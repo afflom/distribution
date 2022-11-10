@@ -75,8 +75,9 @@ func LinkQuery(digests []string, db *bolt.DB) (links Links, err error) {
 
 }
 
-func DigestQuery(digests []string, db *bolt.DB) (resolvedDigests map[digest.Digest][]string, err error) {
+func DigestQuery(digests []string, db *bolt.DB) (map[digest.Digest][][]byte, error) {
 
+	resolvedDigests := make(map[digest.Digest][][]byte)
 	if err := db.View(func(tx *bolt.Tx) error {
 		digestsBucket := tx.Bucket([]byte("digests"))
 		for _, ld := range digests {
@@ -87,7 +88,7 @@ func DigestQuery(digests []string, db *bolt.DB) (resolvedDigests map[digest.Dige
 			}
 			namespaceCursor := digestsBucket.Cursor()
 			for n, _ := namespaceCursor.First(); n != nil; n, _ = namespaceCursor.Next() {
-				resolvedDigests[digest] = append(resolvedDigests[digest], string(n))
+				resolvedDigests[digest] = append(resolvedDigests[digest], n)
 			}
 
 		}

@@ -41,17 +41,10 @@ func (ah *attributesHandler) GetAttributes(w http.ResponseWriter, r *http.Reques
 
 	log.Printf("values: %v", values)
 
-	// Query links
-	l := values.Get("links")
-
-	links := strings.Split(l, ",")
-
-	resolvedLinks, err := uor.LinkQuery(links, ah.database)
-
 	// Query by attributes
 	attributes := values.Get("attributes")
 	var attribs map[string]interface{}
-	err = json.Unmarshal([]byte(attributes), &attribs)
+	err := json.Unmarshal([]byte(attributes), &attribs)
 
 	if err != nil {
 		ah.Errors = append(ah.Errors, errcode.ErrorCodeUnknown.WithDetail(err))
@@ -75,12 +68,9 @@ func (ah *attributesHandler) GetAttributes(w http.ResponseWriter, r *http.Reques
 		log.Printf("error reading db: %v", err)
 	}
 
-
-   
-
 	var manifest v1.Index
 
-	resultm := make(map[digest.Digest]map[string][][]byte)
+	resultm := make(map[digest.Digest]map[string]map[string][][]byte)
 
 	// Deduplicate the database response
 	for i, result := range results {
@@ -89,7 +79,35 @@ func (ah *attributesHandler) GetAttributes(w http.ResponseWriter, r *http.Reques
 		attrib := make(map[string][][]byte)
 		log.Printf("deduplicating result %v", i)
 		attrib[result.AttribKey] = append(attrib[result.AttribKey], jsn)
-		resultm[result.Digest] = attrib
+		schema := make(map[string]map[string][][]byte)
+		schema[result.Schema] = attrib
+		resultm[result.Digest] = schema
+	}
+
+	// Query links
+	l := values.Get("links")
+
+	links := strings.Split(l, ",")
+
+	resolvedLinks, err := uor.LinkQuery(links, ah.database)
+	if err != nil {
+		log.Printf("error reading db: %v", err)
+	}
+
+	for linker, target := range resolvedLinks {
+		coreLink := make(map[string]map[string][][]byte)
+		hint := make(map[string][][]byte)
+
+		t, err := json.Marshal(target)
+		if err != nil {
+			log.Printf("error reading db: %v", err)
+		}
+
+		hint["hints"] = append(hint["hints"], t)
+
+		coreLink["core-link"] = hint
+
+		resultm[linker] = coreLink
 	}
 
 	// Resolve digests
@@ -103,12 +121,17 @@ func (ah *attributesHandler) GetAttributes(w http.ResponseWriter, r *http.Reques
 	}
 
 	resolvedDigests, err := uor.DigestQuery(digests, ah.database)
+	if err != nil {
+		log.Printf("error reading db: %v", err)
+	}
 
-   for rd, attrs := range resolvedDigests {
-	resultm[rd] = 
-   }
-
-
+	for rd, attrs := range resolvedDigests {
+		coreLink := make(map[string]map[string][][]byte)
+		namespaceHint := make(map[string][][]byte)
+		namespaceHint["namespaceHint"] = attrs
+		coreLink["core-link"] = namespaceHint
+		resultm[rd] = coreLink
+	}
 
 	// Write the index manifest with the resolved descriptors
 	for digest, _ := range resultm {

@@ -147,7 +147,7 @@ func AttributeQuery(attribquery map[string]json.RawMessage, db *bolt.DB) (Result
 						log.Printf("bucket stats: %v", digestCursor.Bucket().Stats().KeyN)
 						for d, _ := digestCursor.First(); d != nil; d, _ = digestCursor.Next() {
 							log.Printf("Found Digest: %v", string(d))
-							digest, _ := digest.Parse(string(d))
+							digest := digest.FromBytes(d)
 							result := Result{
 								Schema:    schemaid,
 								AttribKey: keyname,
@@ -174,11 +174,11 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 	// Get manifest
 	_, payload, err := manifest.Payload()
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	man := ocispec.Manifest{}
 	if err := json.Unmarshal(payload, &man); err != nil {
-		log.Fatal(err)
+		return err
 	}
 
 	// Parse the manifest and store each attribute as an entry in the map
@@ -195,7 +195,7 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 		if k == "uor.attributes" {
 			attrs, err := convertAnnotationsToAttributes(v)
 			if err != nil {
-				log.Fatal(err)
+				return err
 			}
 			for sid, vals := range attrs {
 				attribs[sid] = append(attribs[sid], vals...)
@@ -227,7 +227,7 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 				if k == "uor.attributes" {
 					linkAttribs, err = convertAnnotationsToAttributes(v)
 					if err != nil {
-						log.Fatal(err)
+						return err
 					}
 					// Add the attributes of the link to this manifest's attributeset
 					for sid, vals := range linkAttribs {
@@ -248,7 +248,7 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 			if k == "uor.attributes" {
 				attrs, err := convertAnnotationsToAttributes(v)
 				if err != nil {
-					log.Fatal(err)
+					return err
 				}
 				for sid, vals := range attrs {
 					attribs[sid] = append(attribs[sid], vals...)
@@ -278,7 +278,7 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 			// Create schema ID bucket
 			schemaBucket, err := tx.CreateBucketIfNotExists([]byte(schemaid))
 			if err != nil {
-				log.Fatal(err)
+				return err
 			}
 			log.Printf("Wrote schema: %s", schemaid)
 
@@ -293,30 +293,30 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 					// Create attribute key bucket
 					keyBucket, err := schemaBucket.CreateBucketIfNotExists([]byte(keyname))
 					if err != nil {
-						log.Fatal(err)
+						return err
 					}
 					log.Printf("Wrote Key: %s", keyname)
 
 					v, err := json.Marshal(value)
 					if err != nil {
-						log.Fatal(err)
+						return err
 					}
 
 					// Create value bucket
 					valueBucket, err := keyBucket.CreateBucketIfNotExists([]byte(v))
 					if err != nil {
-						log.Fatal(err)
+						return err
 					}
 					log.Printf("Wrote Value: %s", string(v))
 
 					_, err = valueBucket.CreateBucketIfNotExists([]byte(digest.Encoded()))
 					if err != nil {
-						log.Fatal(err)
+						return err
 					}
 					log.Printf("Wrote Digest: %s", digest.String())
 
 					if err != nil {
-						log.Fatal(err)
+						return err
 					}
 				}
 			}
@@ -329,22 +329,21 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 			// Write digest query database partition
 			digestTopBucket, err := tx.CreateBucketIfNotExists([]byte("digests"))
 			if err != nil {
-				log.Fatal(err)
+				return err
 			}
 			digestBucket, err := digestTopBucket.CreateBucketIfNotExists([]byte(digest))
 			if err != nil {
-				log.Fatal(err)
+				return err
 			}
 			_, err = digestBucket.CreateBucketIfNotExists([]byte(repo.Named().Name()))
 			if err != nil {
-				log.Fatal(err)
+				return err
 			}
 
 			// The is the schema for the link query partition
 			// - Top level bucket: "links"
 			//   - Nested bucket: digest (link target)
 			//     - Nested bucket: digest (parent)
-			//     - Nested bucket: "registry" (nested under link target digest)
 			//       - Nested bucket: registryHint
 			//         - Nested bucket: namespaceHint
 

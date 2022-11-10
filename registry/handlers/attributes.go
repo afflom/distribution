@@ -95,7 +95,7 @@ func (ah *attributesHandler) GetAttributes(w http.ResponseWriter, r *http.Reques
 	}
 
 	for linker, target := range resolvedLinks {
-		coreLink := make(map[string]map[string][][]byte)
+		coreLink := make(map[string]map[string][][]byte) // core-link/registryHint/NamespaceHints
 		hint := make(map[string][][]byte)
 
 		t, err := json.Marshal(target)
@@ -116,7 +116,7 @@ func (ah *attributesHandler) GetAttributes(w http.ResponseWriter, r *http.Reques
 
 	digests := strings.Split(d, ",")
 
-	for k, _ := range resultm {
+	for k := range resultm {
 		digests = append(digests, k.String())
 	}
 
@@ -134,16 +134,16 @@ func (ah *attributesHandler) GetAttributes(w http.ResponseWriter, r *http.Reques
 	}
 
 	// Write the index manifest with the resolved descriptors
-	for digest, _ := range resultm {
+	for digest, result := range resultm {
 
-		//ann, _ := json.Marshal(result)
-		//uorAttrib := make(map[string]string)
-		//uorAttrib["uor.attributes"] = string(ann)
+		ann, _ := json.Marshal(result)
+		uorAttrib := make(map[string]string)
+		uorAttrib["uor.attributes"] = string(ann)
 		desc := v1.Descriptor{
 			MediaType:   v1.MediaTypeImageIndex,
 			Size:        0,
 			Digest:      digest,
-			Annotations: nil,
+			Annotations: uorAttrib,
 			Platform:    nil,
 			URLs:        nil,
 		}

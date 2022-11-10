@@ -38,7 +38,7 @@ func (ms *manifestListHandler) Put(ctx context.Context, manifestList distributio
 		return "", fmt.Errorf("wrong type put to manifestListHandler: %T", manifestList)
 	}
 
-	if err := ms.verifyManifest(ms.ctx, *m, skipDependencyVerification); err != nil {
+	if err := ms.verifyManifest(ms.ctx, *m, true); err != nil {
 		return "", err
 	}
 

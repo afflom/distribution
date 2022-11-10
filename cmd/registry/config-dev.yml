@@ -1,4 +1,6 @@
 version: 0.1
+validation:
+  disabled: true
 log:
   level: debug
   fields:

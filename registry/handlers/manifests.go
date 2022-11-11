@@ -404,7 +404,6 @@ func (imh *manifestHandler) PutManifest(w http.ResponseWriter, r *http.Request) 
 		// case, we set an empty location header.
 		dcontext.GetLogger(imh).Errorf("error building manifest url from digest: %v", err)
 	}
-
 	if err := uor.WriteDB(manifest, imh.Digest, imh.Repository, imh.database); err != nil {
 		dcontext.GetLogger(imh).Errorf("error writing attributes to database: %v", err)
 	}

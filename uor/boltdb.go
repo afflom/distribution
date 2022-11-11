@@ -34,19 +34,24 @@ type Target struct {
 	Hints  map[string][]string `json:"hints"`
 }
 
-func LinkQuery(digests []string, db *bolt.DB) (links Links, err error) {
-
+func LinkQuery(digests []string, db *bolt.DB) (Links, error) {
+	log.Println("Link query called")
+	links := make(Links)
 	if err := db.View(func(tx *bolt.Tx) error {
 		linksBucket := tx.Bucket([]byte("links"))
+		log.Println("in top level links bucket")
+		if digests != nil {
+			log.Println("Link Digests found")
+		}
 		for _, ld := range digests {
-			if linksBucket == nil {
-				return err
-			}
+
 			dgst, err := digest.Parse(ld)
 			if err != nil {
 				return err
 			}
+
 			targetBucket := linksBucket.Bucket([]byte(dgst))
+			log.Printf("in target bucket: %v", string(dgst))
 
 			linkerCursor := targetBucket.Cursor()
 			for l, _ := linkerCursor.First(); l != nil; l, _ = linkerCursor.Next() {
@@ -54,16 +59,28 @@ func LinkQuery(digests []string, db *bolt.DB) (links Links, err error) {
 				if err != nil {
 					return err
 				}
-				registryBucket := targetBucket.Bucket(l)
-				registryCursor := targetBucket.Cursor()
+				linkerBucket := targetBucket.Bucket(l)
+				log.Printf("in linker bucket: %v", string(l))
+
+				registryCursor := linkerBucket.Cursor()
 				hints := make(map[string][]string)
 
 				for r, _ := registryCursor.First(); r != nil; r, _ = registryCursor.Next() {
-					namespaceBucket := registryBucket.Bucket(r)
-					namespaceCursor := namespaceBucket.Cursor()
+					registryBucket := linkerBucket.Bucket(r)
+					log.Printf("In namespace bucket %v", string(r))
+
+					namespaceCursor := registryBucket.Cursor()
 
 					for n, _ := namespaceCursor.First(); n != nil; n, _ = namespaceCursor.Next() {
+						log.Printf("namespace found: %v", string(n))
+
 						hints[string(r)] = append(hints[string(r)], string(n))
+
+						hn, err := json.Marshal(hints)
+						if err != nil {
+							return err
+						}
+						log.Printf("hints %v", string(hn))
 					}
 				}
 				links[parsedDigest] = Target{
@@ -77,27 +94,49 @@ func LinkQuery(digests []string, db *bolt.DB) (links Links, err error) {
 	}); err != nil {
 		return nil, nil
 	}
-	return nil, nil
+	return links, nil
 
 }
 
-func DigestQuery(digests []string, db *bolt.DB) (map[digest.Digest][][]byte, error) {
+func DigestQuery(digests []string, db *bolt.DB) ([]Target, error) {
+	log.Println("Digest query called")
 
-	resolvedDigests := make(map[digest.Digest][][]byte)
+	var target []Target
+
 	if err := db.View(func(tx *bolt.Tx) error {
 		digestsBucket := tx.Bucket([]byte("digests"))
+		log.Printf("Entered bucket: %v", "digests")
+
 		for _, ld := range digests {
+			log.Printf("Digest queried: %v", ld)
+
 			digest, err := digest.Parse(ld)
 			if err != nil {
 				return err
 			}
-
-			if digestsBucket == nil {
-				return fmt.Errorf("no matching records found for schema: %v", digest.String())
+			digestBucket := digestsBucket.Bucket([]byte(digest))
+			if digestBucket == nil {
+				return fmt.Errorf("digest not found")
 			}
-			namespaceCursor := digestsBucket.Cursor()
+			log.Printf("Entered bucket: %v", digest.String())
+
+			log.Printf("Digest query matched: %v", digest)
+
+			namespaceCursor := digestBucket.Cursor()
+
+			isEmpty := namespaceCursor.Bucket().Stats()
+			log.Printf("is empty ? %v", isEmpty)
 			for n, _ := namespaceCursor.First(); n != nil; n, _ = namespaceCursor.Next() {
-				resolvedDigests[digest] = append(resolvedDigests[digest], n)
+				log.Printf("in namespace bucket: %v", string(n))
+				hints := make(map[string][]string)
+				hints["local"] = append(hints["local"], string(n))
+				local := Target{
+					Target: digest,
+					Hints:  hints,
+				}
+				target = append(target, local)
+				log.Printf("Resolved digest %v to: %v", digest, string(n))
+
 			}
 
 		}
@@ -105,7 +144,7 @@ func DigestQuery(digests []string, db *bolt.DB) (map[digest.Digest][][]byte, err
 	}); err != nil {
 		return nil, nil
 	}
-	return nil, nil
+	return target, nil
 
 }
 
@@ -209,6 +248,8 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 
 	for k, v := range man.Annotations {
 		if k == "uor.attributes" {
+			log.Println("uor attributes found")
+
 			attrs, err := convertAnnotationsToAttributes(v)
 			if err != nil {
 				return err
@@ -227,16 +268,16 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 				return err
 			}
 
-			for _, value := range jsonData {
-				jsonValue, err := json.Marshal(value)
-				if err != nil {
-					return err
-				}
-				err = json.Unmarshal(jsonValue, &link)
-				if err != nil {
-					return err
-				}
+			jsonValue, err := json.Marshal(jsonData)
+			if err != nil {
+				return err
 			}
+			log.Printf("jsonValue: %v", string(jsonValue))
+			err = json.Unmarshal(jsonValue, &link)
+			if err != nil {
+				return err
+			}
+
 			// Get link attributes
 
 			for k, v := range link.Annotations {
@@ -245,10 +286,16 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 					if err != nil {
 						return err
 					}
+
 					// Add the attributes of the link to this manifest's attributeset
 					for sid, vals := range linkAttribs {
 						attribs[sid] = append(attribs[sid], vals...)
 
+						ld, err := json.Marshal(sid)
+						if err != nil {
+							return err
+						}
+						log.Printf("link attribute: %v", string(ld))
 					}
 				}
 				log.Printf("writing collection attributes to manifest: %v", v)
@@ -281,11 +328,12 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 
 	log.Printf("Attributes to be written: %v", attribs)
 
-	// The is the schema for the attribute query partition
+	// This is the schema for the attribute query partition
 	// - Top level bucket: SchemaID
 	//   - Nested bucket: attribute key
 	//     - Nested bucket: attribute value (json.RawMessage)
 	//         - Nested bucket: digest
+	log.Println("Writing attribute query partition")
 
 	for schemaid, attributes := range attribs {
 
@@ -343,11 +391,14 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 			//     - Nested bucket: namespace
 
 			// Write digest query database partition
+			log.Println("Writing digest query partition")
+
 			digestTopBucket, err := tx.CreateBucketIfNotExists([]byte("digests"))
 			if err != nil {
 				return err
 			}
 			digestBucket, err := digestTopBucket.CreateBucketIfNotExists([]byte(digest))
+
 			if err != nil {
 				return err
 			}
@@ -364,49 +415,84 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 			//         - Nested bucket: namespaceHint
 
 			// Write link lookup database partition
+
+			log.Println("Writing link query partition")
+			peek, _ := json.Marshal(link)
+			log.Printf("link: %v", string(peek))
+
 			if link.Digest.String() != "" {
+
+				log.Println("link has digest")
+
 				linksTopBucket, err := tx.CreateBucketIfNotExists([]byte("links"))
 				if err != nil {
 					log.Fatal(err)
 				}
+				log.Println("in links bucket")
 
 				linkTargetBucket, err := linksTopBucket.CreateBucketIfNotExists([]byte(link.Digest))
 				if err != nil {
 					log.Fatal(err)
 				}
 
+				log.Println("in target bucket")
+
 				linkerBucket, err := linkTargetBucket.CreateBucketIfNotExists([]byte(digest))
 				if err != nil {
 					log.Fatal(err)
 				}
 
-				var ldata map[string]interface{}
-
-				hints := linkAttribs["core-link"]
+				log.Println("in linker bucket")
 
 				var registry string
 				var namespace string
 
-				for _, hint := range hints {
+				var ldata map[string]interface{}
+				if attribs != nil {
+					hints := linkAttribs["core-link"]
+					log.Println("Starting hints if")
+					if hints != nil {
+						for _, hint := range hints {
 
-					err := json.Unmarshal(hint, &ldata)
-					if err != nil {
-						log.Fatal(err)
-					}
-					if data["registryHint"] != "" {
-						registryHint, err := json.Marshal(data["registryHint"])
-						if err != nil {
-							log.Fatal(err)
+							err = json.Unmarshal(hint, &ldata)
+							if err != nil {
+								log.Fatal(err)
+							}
+							ld, _ := json.Marshal(ldata)
+							log.Printf("ldata: %v", string(ld))
+
+							if data["registryHint"] != "" {
+								registryHint, err := json.Marshal(data["registryHint"])
+								if err != nil {
+									log.Fatal(err)
+								}
+								registry = string(registryHint)
+							}
+							if data["registryHint"] == "" {
+
+								registry = "none"
+							}
+							if data["namespaceHint"] != "" {
+								namespaceHint, err := json.Marshal(data["namespaceHint"])
+								if err != nil {
+									log.Fatal(err)
+								}
+								namespace = string(namespaceHint)
+							}
+							if data["namespaceHint"] == "" {
+								namespace = "none"
+							}
 						}
-						registry = string(registryHint)
+					} else {
+						log.Printf("No hints")
+						namespace = "none"
+						registry = "none"
 					}
-					if data["namespaceHint"] != "" {
-						namespaceHint, err := json.Marshal(data["namespaceHint"])
-						if err != nil {
-							log.Fatal(err)
-						}
-						namespace = string(namespaceHint)
-					}
+
+				} else {
+					log.Printf("No hints")
+					namespace = "none"
+					registry = "none"
 				}
 
 				registryHintBucket, err := linkerBucket.CreateBucketIfNotExists([]byte(registry))
@@ -414,10 +500,13 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 					log.Fatal(err)
 				}
 
+				log.Println("in registry bucket")
+
 				_, err = registryHintBucket.CreateBucketIfNotExists([]byte(namespace))
 				if err != nil {
 					log.Fatal(err)
 				}
+				log.Println("in namespace bucket")
 
 				return nil
 
@@ -452,11 +541,11 @@ func convertAnnotationsToAttributes(annotations string) (AttributeSet, error) {
 	specAttributes := AttributeSet{}
 
 	var jsonData map[string]interface{}
-
+	log.Println("unmarshalling annotations")
 	if err := json.Unmarshal([]byte(annotations), &jsonData); err != nil {
 		return specAttributes, err
 	}
-
+	log.Println("unmarshaled annotations")
 	for key, value := range jsonData {
 		jsonValue, err := json.Marshal(value)
 		if err != nil {

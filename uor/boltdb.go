@@ -10,9 +10,10 @@ import (
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 
-	"github.com/distribution/distribution/v3"
 	digest "github.com/opencontainers/go-digest"
 	bolt "go.etcd.io/bbolt"
+
+	"github.com/distribution/distribution/v3"
 )
 
 type AttributeSet map[string][]json.RawMessage
@@ -40,7 +41,7 @@ func LinkQuery(digests []string, db *bolt.DB) (Links, error) {
 	if err := db.View(func(tx *bolt.Tx) error {
 		linksBucket := tx.Bucket([]byte("links"))
 		log.Println("in top level links bucket")
-		if digests != nil {
+		if len(digests) != 0 {
 			log.Println("Link Digests found")
 		}
 		for _, ld := range digests {
@@ -51,6 +52,9 @@ func LinkQuery(digests []string, db *bolt.DB) (Links, error) {
 			}
 
 			targetBucket := linksBucket.Bucket([]byte(dgst))
+			if targetBucket == nil {
+				return fmt.Errorf("digest not found")
+			}
 			log.Printf("in target bucket: %v", string(dgst))
 
 			linkerCursor := targetBucket.Cursor()
@@ -177,18 +181,26 @@ func AttributeQuery(attribquery map[string]json.RawMessage, db *bolt.DB) (Result
 			var data map[string]interface{}
 
 			for i, pair := range attributeValues {
-				json.Unmarshal(pair, &data)
+				if err := json.Unmarshal(pair, &data); err != nil {
+					return err
+				}
 				log.Printf("Data: %v", data)
 				for keyname, value := range data {
 
 					log.Printf("Attribute key%v: %v", i, keyname)
 					attributeKeyBucket := schemaBucket.Bucket([]byte(keyname))
 					for _, attributeValue := range attributeValues {
-						v, _ := json.Marshal(&value)
+						v, err := json.Marshal(&value)
+						if err != nil {
+							return err
+						}
 						log.Printf("Attribute key%v, Value: %v", i, string(v))
 
 						// Enter the value bucket
-						valueBucket := attributeKeyBucket.Bucket([]byte(v))
+						valueBucket := attributeKeyBucket.Bucket(v)
+						if valueBucket == nil {
+							continue
+						}
 						// query for kv pairs in the value bucket
 						digestCursor := valueBucket.Cursor()
 						// cursor loop returns namespace and digest of the match
@@ -367,7 +379,7 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 					}
 
 					// Create value bucket
-					valueBucket, err := keyBucket.CreateBucketIfNotExists([]byte(v))
+					valueBucket, err := keyBucket.CreateBucketIfNotExists(v)
 					if err != nil {
 						return err
 					}

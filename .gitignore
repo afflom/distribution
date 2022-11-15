@@ -22,6 +22,7 @@ _testmain.go
 *.exe
 *.test
 *.prof
+bolt-db
 
 # never checkin from the bin file (for now)
 bin/*

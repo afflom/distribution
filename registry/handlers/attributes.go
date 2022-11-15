@@ -6,11 +6,12 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/distribution/distribution/v3/registry/api/errcode"
-	"github.com/distribution/distribution/v3/uor"
 	"github.com/gorilla/handlers"
 	"github.com/opencontainers/go-digest"
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
+
+	"github.com/distribution/distribution/v3/registry/api/errcode"
+	"github.com/distribution/distribution/v3/uor"
 )
 
 func attributesDispatcher(ctx *Context, r *http.Request) http.Handler {
@@ -68,6 +69,7 @@ func (ah *attributesHandler) GetAttributes(w http.ResponseWriter, r *http.Reques
 
 		results, err := uor.AttributeQuery(attributeMap, ah.database)
 		if err != nil {
+			ah.Errors = append(ah.Errors, errcode.ErrorCodeUnknown.WithDetail(err))
 			log.Printf("error reading db: %v", err)
 		}
 
@@ -82,17 +84,19 @@ func (ah *attributesHandler) GetAttributes(w http.ResponseWriter, r *http.Reques
 
 			pair, err := json.Marshal(result.AttribVal)
 			if err != nil {
-				log.Printf("Error while filtering: %v", err)
+				ah.Errors = append(ah.Errors, errcode.ErrorCodeUnknown.WithDetail(err))
 			}
 			var jsonData map[string]interface{}
 			log.Println("unmarshalling annotations")
-			if err := json.Unmarshal([]byte(pair), &jsonData); err != nil {
-				log.Printf("Error while filtering: %v", err)
+			if err := json.Unmarshal(pair, &jsonData); err != nil {
+				ah.Errors = append(ah.Errors, errcode.ErrorCodeUnknown.WithDetail(err))
+				continue
 			}
 			for key, value := range jsonData {
 				jsonValue, err := json.Marshal(value)
 				if err != nil {
-					log.Printf("Error while filtering: %v", err)
+					ah.Errors = append(ah.Errors, errcode.ErrorCodeUnknown.WithDetail(err))
+					continue
 				}
 				s := make(map[string]map[string][]json.RawMessage)
 				at := make(map[string][]json.RawMessage)
@@ -110,17 +114,20 @@ func (ah *attributesHandler) GetAttributes(w http.ResponseWriter, r *http.Reques
 
 				pair, err := json.Marshal(attr)
 				if err != nil {
-					log.Printf("Error while filtering: %v", err)
+					ah.Errors = append(ah.Errors, errcode.ErrorCodeUnknown.WithDetail(err))
+					continue
 				}
 				var jsonData map[string]interface{}
 				log.Println("unmarshalling annotations")
-				if err := json.Unmarshal([]byte(pair), &jsonData); err != nil {
-					log.Printf("Error while filtering: %v", err)
+				if err := json.Unmarshal(pair, &jsonData); err != nil {
+					ah.Errors = append(ah.Errors, errcode.ErrorCodeUnknown.WithDetail(err))
+					continue
 				}
 				for key, value := range jsonData {
 					jsonValue, err := json.Marshal(value)
 					if err != nil {
-						log.Printf("Error while filtering: %v", err)
+						ah.Errors = append(ah.Errors, errcode.ErrorCodeUnknown.WithDetail(err))
+						continue
 					}
 					oa := make(map[string]json.RawMessage)
 					oa[key] = jsonValue
@@ -189,7 +196,7 @@ func (ah *attributesHandler) GetAttributes(w http.ResponseWriter, r *http.Reques
 			log.Println("query was split")
 			resolvedLinks, err := uor.LinkQuery(links, ah.database)
 			if err != nil {
-				log.Printf("error reading db: %v", err)
+				ah.Errors = append(ah.Errors, errcode.ErrorCodeUnknown.WithDetail(err))
 			}
 
 			for linker, target := range resolvedLinks {
@@ -222,10 +229,8 @@ func (ah *attributesHandler) GetAttributes(w http.ResponseWriter, r *http.Reques
 		}
 
 		resolvedDigests, err := uor.DigestQuery(digests, ah.database)
-		log.Printf("Resolved digest map: %v", resolvedDigests)
-
 		if err != nil {
-			log.Printf("error reading db: %v", err)
+			ah.Errors = append(ah.Errors, errcode.ErrorCodeUnknown.WithDetail(err))
 		}
 
 		for _, target := range resolvedDigests {

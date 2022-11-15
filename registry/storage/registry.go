@@ -4,12 +4,12 @@ import (
 	"context"
 	"regexp"
 
+	"github.com/docker/libtrust"
+
 	"github.com/distribution/distribution/v3"
 	"github.com/distribution/distribution/v3/reference"
 	"github.com/distribution/distribution/v3/registry/storage/cache"
 	storagedriver "github.com/distribution/distribution/v3/registry/storage/driver"
-	"github.com/docker/libtrust"
-	bolt "go.etcd.io/bbolt"
 )
 
 // registry is the top-level implementation of Registry for use in the storage
@@ -26,7 +26,6 @@ type registry struct {
 	blobDescriptorServiceFactory distribution.BlobDescriptorServiceFactory
 	manifestURLs                 manifestURLs
 	driver                       storagedriver.StorageDriver
-	database                     *bolt.DB
 }
 
 // manifestURLs holds regular expressions for controlling manifest URL whitelisting

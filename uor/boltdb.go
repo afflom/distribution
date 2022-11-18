@@ -36,16 +36,18 @@ type Target struct {
 }
 
 func LinkQuery(digests []string, db *bolt.DB) (Links, error) {
-	log.Println("Link query called")
 	links := make(Links)
+	if len(digests) == 0 {
+		return links, nil
+	}
+
 	if err := db.View(func(tx *bolt.Tx) error {
 		linksBucket := tx.Bucket([]byte("links"))
-		log.Println("in top level links bucket")
-		if len(digests) != 0 {
-			log.Println("Link Digests found")
+		if linksBucket == nil {
+			return fmt.Errorf("links not found")
 		}
-		for _, ld := range digests {
 
+		for _, ld := range digests {
 			dgst, err := digest.Parse(ld)
 			if err != nil {
 				return err
@@ -55,7 +57,6 @@ func LinkQuery(digests []string, db *bolt.DB) (Links, error) {
 			if targetBucket == nil {
 				return fmt.Errorf("digest not found")
 			}
-			log.Printf("in target bucket: %v", string(dgst))
 
 			linkerCursor := targetBucket.Cursor()
 			for l, _ := linkerCursor.First(); l != nil; l, _ = linkerCursor.Next() {
@@ -96,24 +97,26 @@ func LinkQuery(digests []string, db *bolt.DB) (Links, error) {
 		}
 		return nil
 	}); err != nil {
-		return nil, nil
+		return links, err
 	}
 	return links, nil
 
 }
 
 func DigestQuery(digests []string, db *bolt.DB) ([]Target, error) {
-	log.Println("Digest query called")
-
 	var target []Target
+
+	if len(digests) == 0 {
+		return target, nil
+	}
 
 	if err := db.View(func(tx *bolt.Tx) error {
 		digestsBucket := tx.Bucket([]byte("digests"))
-		log.Printf("Entered bucket: %v", "digests")
+		if digestsBucket == nil {
+			return fmt.Errorf("digests not found")
+		}
 
 		for _, ld := range digests {
-			log.Printf("Digest queried: %v", ld)
-
 			digest, err := digest.Parse(ld)
 			if err != nil {
 				return err
@@ -122,16 +125,12 @@ func DigestQuery(digests []string, db *bolt.DB) ([]Target, error) {
 			if digestBucket == nil {
 				return fmt.Errorf("digest not found")
 			}
-			log.Printf("Entered bucket: %v", digest.String())
-
-			log.Printf("Digest query matched: %v", digest)
 
 			namespaceCursor := digestBucket.Cursor()
 
 			isEmpty := namespaceCursor.Bucket().Stats()
 			log.Printf("is empty ? %v", isEmpty)
 			for n, _ := namespaceCursor.First(); n != nil; n, _ = namespaceCursor.Next() {
-				log.Printf("in namespace bucket: %v", string(n))
 				hints := make(map[string][]string)
 				hints["local"] = append(hints["local"], string(n))
 				local := Target{
@@ -140,13 +139,12 @@ func DigestQuery(digests []string, db *bolt.DB) ([]Target, error) {
 				}
 				target = append(target, local)
 				log.Printf("Resolved digest %v to: %v", digest, string(n))
-
 			}
 
 		}
 		return nil
 	}); err != nil {
-		return nil, nil
+		return target, err
 	}
 	return target, nil
 
@@ -189,41 +187,43 @@ func AttributeQuery(attribquery map[string]json.RawMessage, db *bolt.DB) (Result
 
 					log.Printf("Attribute key%v: %v", i, keyname)
 					attributeKeyBucket := schemaBucket.Bucket([]byte(keyname))
-					for _, attributeValue := range attributeValues {
-						v, err := json.Marshal(&value)
+					if attributeKeyBucket == nil {
+						continue
+					}
+					v, err := json.Marshal(&value)
+					if err != nil {
+						return err
+					}
+					log.Printf("Attribute key%v, Value: %v", i, string(v))
+
+					// Enter the value bucket
+					valueBucket := attributeKeyBucket.Bucket(v)
+					if valueBucket == nil {
+						continue
+					}
+					// query for kv pairs in the value bucket
+					digestCursor := valueBucket.Cursor()
+					// cursor loop returns namespace and digest of the match
+					log.Printf("bucket stats: %v", digestCursor.Bucket().Stats().KeyN)
+					for d, _ := digestCursor.First(); d != nil; d, _ = digestCursor.Next() {
+						log.Printf("Found Digest: %v", string(d))
+						digest, err := digest.Parse(string(d))
 						if err != nil {
 							return err
 						}
-						log.Printf("Attribute key%v, Value: %v", i, string(v))
-
-						// Enter the value bucket
-						valueBucket := attributeKeyBucket.Bucket(v)
-						if valueBucket == nil {
-							continue
+						err = digest.Validate()
+						if err != nil {
+							return err
 						}
-						// query for kv pairs in the value bucket
-						digestCursor := valueBucket.Cursor()
-						// cursor loop returns namespace and digest of the match
-						log.Printf("bucket stats: %v", digestCursor.Bucket().Stats().KeyN)
-						for d, _ := digestCursor.First(); d != nil; d, _ = digestCursor.Next() {
-							log.Printf("Found Digest: %v", string(d))
-							digest, err := digest.Parse(string(d))
-							if err != nil {
-								return err
-							}
-							err = digest.Validate()
-							if err != nil {
-								return err
-							}
-							result := Result{
-								Schema:    schemaid,
-								AttribKey: keyname,
-								AttribVal: attributeValue,
-								Digest:    digest,
-							}
-							resultSet = append(resultSet, &result)
+						result := Result{
+							Schema:    schemaid,
+							AttribKey: keyname,
+							AttribVal: v,
+							Digest:    digest,
 						}
+						resultSet = append(resultSet, &result)
 					}
+
 					//fmt.Printf("Attribute: %s, Value:  %s, Manifest: %s", ak.Get([]byte(k)), av, value.Get([]byte(digest)))
 				}
 			}
@@ -268,7 +268,6 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 			}
 			for sid, vals := range attrs {
 				attribs[sid] = append(attribs[sid], vals...)
-
 			}
 
 			log.Printf("writing collection attributes to manifest: %v", v)
@@ -429,7 +428,10 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 			// Write link lookup database partition
 
 			log.Println("Writing link query partition")
-			peek, _ := json.Marshal(link)
+			peek, err := json.Marshal(link)
+			if err != nil {
+				return err
+			}
 			log.Printf("link: %v", string(peek))
 
 			if link.Digest.String() != "" {
@@ -438,20 +440,20 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 
 				linksTopBucket, err := tx.CreateBucketIfNotExists([]byte("links"))
 				if err != nil {
-					log.Fatal(err)
+					return err
 				}
 				log.Println("in links bucket")
 
 				linkTargetBucket, err := linksTopBucket.CreateBucketIfNotExists([]byte(link.Digest))
 				if err != nil {
-					log.Fatal(err)
+					return err
 				}
 
 				log.Println("in target bucket")
 
 				linkerBucket, err := linkTargetBucket.CreateBucketIfNotExists([]byte(digest))
 				if err != nil {
-					log.Fatal(err)
+					return err
 				}
 
 				log.Println("in linker bucket")
@@ -468,7 +470,7 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 
 							err = json.Unmarshal(hint, &ldata)
 							if err != nil {
-								log.Fatal(err)
+								return err
 							}
 							ld, _ := json.Marshal(ldata)
 							log.Printf("ldata: %v", string(ld))
@@ -476,7 +478,7 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 							if data["registryHint"] != "" {
 								registryHint, err := json.Marshal(data["registryHint"])
 								if err != nil {
-									log.Fatal(err)
+									return err
 								}
 								registry = string(registryHint)
 							}
@@ -487,7 +489,7 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 							if data["namespaceHint"] != "" {
 								namespaceHint, err := json.Marshal(data["namespaceHint"])
 								if err != nil {
-									log.Fatal(err)
+									return err
 								}
 								namespace = string(namespaceHint)
 							}
@@ -509,25 +511,22 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 
 				registryHintBucket, err := linkerBucket.CreateBucketIfNotExists([]byte(registry))
 				if err != nil {
-					log.Fatal(err)
+					return err
 				}
 
 				log.Println("in registry bucket")
 
 				_, err = registryHintBucket.CreateBucketIfNotExists([]byte(namespace))
 				if err != nil {
-					log.Fatal(err)
+					return err
 				}
 				log.Println("in namespace bucket")
 
 				return nil
-
 			}
-
 			return nil
-
 		}); err != nil {
-			log.Fatal(err)
+			return err
 		}
 	}
 	return nil

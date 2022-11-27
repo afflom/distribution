@@ -255,7 +255,7 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 
 	attribs := make(map[string][]json.RawMessage)
 
-	var link v1.Descriptor
+	var links []v1.Descriptor
 	linkAttribs := make(map[string][]json.RawMessage)
 
 	for k, v := range man.Annotations {
@@ -273,43 +273,34 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 			log.Printf("writing collection attributes to manifest: %v", v)
 
 		} else if k == "uor.link" {
-			var jsonData map[string]interface{}
 
-			if err := json.Unmarshal([]byte(v), &jsonData); err != nil {
-				return err
-			}
-
-			jsonValue, err := json.Marshal(jsonData)
-			if err != nil {
-				return err
-			}
-			log.Printf("jsonValue: %v", string(jsonValue))
-			err = json.Unmarshal(jsonValue, &link)
-			if err != nil {
+			if err := json.Unmarshal([]byte(v), &links); err != nil {
 				return err
 			}
 
 			// Get link attributes
 
-			for k, v := range link.Annotations {
-				if k == "uor.attributes" {
-					linkAttribs, err = convertAnnotationsToAttributes(v)
-					if err != nil {
-						return err
-					}
-
-					// Add the attributes of the link to this manifest's attributeset
-					for sid, vals := range linkAttribs {
-						attribs[sid] = append(attribs[sid], vals...)
-
-						ld, err := json.Marshal(sid)
+			for _, link := range links {
+				for k, v := range link.Annotations {
+					if k == "uor.attributes" {
+						linkAttribs, err = convertAnnotationsToAttributes(v)
 						if err != nil {
 							return err
 						}
-						log.Printf("link attribute: %v", string(ld))
+
+						// Add the attributes of the link to this manifest's attributeset
+						for sid, vals := range linkAttribs {
+							attribs[sid] = append(attribs[sid], vals...)
+
+							ld, err := json.Marshal(sid)
+							if err != nil {
+								return err
+							}
+							log.Printf("link attribute: %v", string(ld))
+						}
 					}
+					log.Printf("writing collection attributes to manifest: %v", v)
 				}
-				log.Printf("writing collection attributes to manifest: %v", v)
 			}
 		}
 
@@ -427,102 +418,104 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 
 			// Write link lookup database partition
 
-			log.Println("Writing link query partition")
-			peek, err := json.Marshal(link)
-			if err != nil {
-				return err
-			}
-			log.Printf("link: %v", string(peek))
-
-			if link.Digest.String() != "" {
-
-				log.Println("link has digest")
-
-				linksTopBucket, err := tx.CreateBucketIfNotExists([]byte("links"))
+			for _, link := range links {
+				log.Println("Writing link query partition")
+				peek, err := json.Marshal(link)
 				if err != nil {
 					return err
 				}
-				log.Println("in links bucket")
+				log.Printf("link: %v", string(peek))
 
-				linkTargetBucket, err := linksTopBucket.CreateBucketIfNotExists([]byte(link.Digest))
-				if err != nil {
-					return err
-				}
+				if link.Digest.String() != "" {
 
-				log.Println("in target bucket")
+					log.Println("link has digest")
 
-				linkerBucket, err := linkTargetBucket.CreateBucketIfNotExists([]byte(digest))
-				if err != nil {
-					return err
-				}
+					linksTopBucket, err := tx.CreateBucketIfNotExists([]byte("links"))
+					if err != nil {
+						return err
+					}
+					log.Println("in links bucket")
 
-				log.Println("in linker bucket")
+					linkTargetBucket, err := linksTopBucket.CreateBucketIfNotExists([]byte(link.Digest))
+					if err != nil {
+						return err
+					}
 
-				var registry string
-				var namespace string
+					log.Println("in target bucket")
 
-				var ldata map[string]interface{}
-				if attribs != nil {
-					hints := linkAttribs["core-link"]
-					log.Println("Starting hints if")
-					if hints != nil {
-						for _, hint := range hints {
+					linkerBucket, err := linkTargetBucket.CreateBucketIfNotExists([]byte(digest))
+					if err != nil {
+						return err
+					}
 
-							err = json.Unmarshal(hint, &ldata)
-							if err != nil {
-								return err
-							}
-							ld, _ := json.Marshal(ldata)
-							log.Printf("ldata: %v", string(ld))
+					log.Println("in linker bucket")
 
-							if data["registryHint"] != "" {
-								registryHint, err := json.Marshal(data["registryHint"])
+					var registry string
+					var namespace string
+
+					var ldata map[string]interface{}
+					if attribs != nil {
+						hints := linkAttribs["core-link"]
+						log.Println("Starting hints if")
+						if hints != nil {
+							for _, hint := range hints {
+
+								err = json.Unmarshal(hint, &ldata)
 								if err != nil {
 									return err
 								}
-								registry = string(registryHint)
-							}
-							if data["registryHint"] == "" {
+								ld, _ := json.Marshal(ldata)
+								log.Printf("ldata: %v", string(ld))
 
-								registry = "none"
-							}
-							if data["namespaceHint"] != "" {
-								namespaceHint, err := json.Marshal(data["namespaceHint"])
-								if err != nil {
-									return err
+								if data["registryHint"] != "" {
+									registryHint, err := json.Marshal(data["registryHint"])
+									if err != nil {
+										return err
+									}
+									registry = string(registryHint)
 								}
-								namespace = string(namespaceHint)
+								if data["registryHint"] == "" {
+
+									registry = "none"
+								}
+								if data["namespaceHint"] != "" {
+									namespaceHint, err := json.Marshal(data["namespaceHint"])
+									if err != nil {
+										return err
+									}
+									namespace = string(namespaceHint)
+								}
+								if data["namespaceHint"] == "" {
+									namespace = "none"
+								}
 							}
-							if data["namespaceHint"] == "" {
-								namespace = "none"
-							}
+						} else {
+							log.Printf("No hints")
+							namespace = "none"
+							registry = "none"
 						}
+
 					} else {
 						log.Printf("No hints")
 						namespace = "none"
 						registry = "none"
 					}
 
-				} else {
-					log.Printf("No hints")
-					namespace = "none"
-					registry = "none"
+					registryHintBucket, err := linkerBucket.CreateBucketIfNotExists([]byte(registry))
+					if err != nil {
+						return err
+					}
+
+					log.Println("in registry bucket")
+
+					_, err = registryHintBucket.CreateBucketIfNotExists([]byte(namespace))
+					if err != nil {
+						return err
+					}
+					log.Println("in namespace bucket")
+
+					return nil
 				}
-
-				registryHintBucket, err := linkerBucket.CreateBucketIfNotExists([]byte(registry))
-				if err != nil {
-					return err
-				}
-
-				log.Println("in registry bucket")
-
-				_, err = registryHintBucket.CreateBucketIfNotExists([]byte(namespace))
-				if err != nil {
-					return err
-				}
-				log.Println("in namespace bucket")
-
-				return nil
 			}
 			return nil
 		}); err != nil {

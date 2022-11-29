@@ -28,12 +28,7 @@ type Result struct {
 	Location  map[string][]string `json:"location"`
 }
 
-type Links map[digest.Digest]Target
-
-type Target struct {
-	Target digest.Digest       `json:"target"`
-	Hints  map[string][]string `json:"hints"`
-}
+type Links map[digest.Digest][]ocispec.Descriptor
 
 func LinkQuery(digests []string, db *bolt.DB) (Links, error) {
 	links := make(Links)
@@ -67,32 +62,17 @@ func LinkQuery(digests []string, db *bolt.DB) (Links, error) {
 				linkerBucket := targetBucket.Bucket(l)
 				log.Printf("in linker bucket: %v", string(l))
 
-				registryCursor := linkerBucket.Cursor()
-				hints := make(map[string][]string)
+				descriptorCursor := linkerBucket.Cursor()
+				var descriptors []ocispec.Descriptor
 
-				for r, _ := registryCursor.First(); r != nil; r, _ = registryCursor.Next() {
-					registryBucket := linkerBucket.Bucket(r)
-					log.Printf("In namespace bucket %v", string(r))
-
-					namespaceCursor := registryBucket.Cursor()
-
-					for n, _ := namespaceCursor.First(); n != nil; n, _ = namespaceCursor.Next() {
-						log.Printf("namespace found: %v", string(n))
-
-						hints[string(r)] = append(hints[string(r)], string(n))
-
-						hn, err := json.Marshal(hints)
-						if err != nil {
-							return err
-						}
-						log.Printf("hints %v", string(hn))
+				for r, _ := descriptorCursor.First(); r != nil; r, _ = descriptorCursor.Next() {
+					var descriptor ocispec.Descriptor
+					if err := json.Unmarshal(r, &descriptor); err != nil {
+						return err
 					}
+					descriptors = append(descriptors, descriptor)
 				}
-				links[parsedDigest] = Target{
-					Target: dgst,
-					Hints:  hints,
-				}
-
+				links[parsedDigest] = descriptors
 			}
 		}
 		return nil
@@ -100,15 +80,14 @@ func LinkQuery(digests []string, db *bolt.DB) (Links, error) {
 		return links, err
 	}
 	return links, nil
-
 }
 
-func DigestQuery(digests []string, db *bolt.DB) ([]Target, error) {
-	var target []Target
-
+func DigestQuery(digests []string, db *bolt.DB) ([]ocispec.Descriptor, error) {
 	if len(digests) == 0 {
-		return target, nil
+		return nil, nil
 	}
+
+	var targets []ocispec.Descriptor
 
 	if err := db.View(func(tx *bolt.Tx) error {
 		digestsBucket := tx.Bucket([]byte("digests"))
@@ -126,31 +105,29 @@ func DigestQuery(digests []string, db *bolt.DB) ([]Target, error) {
 				return fmt.Errorf("digest not found")
 			}
 
-			namespaceCursor := digestBucket.Cursor()
-
-			isEmpty := namespaceCursor.Bucket().Stats()
-			log.Printf("is empty ? %v", isEmpty)
-			for n, _ := namespaceCursor.First(); n != nil; n, _ = namespaceCursor.Next() {
-				hints := make(map[string][]string)
-				hints["local"] = append(hints["local"], string(n))
-				local := Target{
-					Target: digest,
-					Hints:  hints,
+			descriptorCursor := digestBucket.Cursor()
+			log.Println(descriptorCursor.Bucket().Stats())
+			for n, _ := descriptorCursor.First(); n != nil; n, _ = descriptorCursor.Next() {
+				log.Printf("found %s", string(n))
+				var desc ocispec.Descriptor
+				if err := json.Unmarshal(n, &desc); err != nil {
+					return err
 				}
-				target = append(target, local)
+				targets = append(targets, desc)
 				log.Printf("Resolved digest %v to: %v", digest, string(n))
 			}
 
 		}
+		log.Println(targets)
 		return nil
 	}); err != nil {
-		return target, err
+		return nil, err
 	}
-	return target, nil
+	return targets, nil
 
 }
 
-// Attribute returns a ResulSet from an attribute Query of boltdb
+// AttributeQuery returns a ResulSet from an attribute Query of boltdb
 func AttributeQuery(attribquery map[string]json.RawMessage, db *bolt.DB) (ResultSet, error) {
 
 	attribs := make(AttributeSet)
@@ -352,7 +329,9 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 
 			for _, pair := range attributes {
 
-				json.Unmarshal(pair, &data)
+				if err := json.Unmarshal(pair, &data); err != nil {
+					return err
+				}
 
 				for keyname, value := range data {
 
@@ -390,7 +369,7 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 			// The is the schema for the digest query partition
 			// - Top level bucket: digests
 			//   - Nested bucket: digest
-			//     - Nested bucket: namespace
+			//     - Nested bucket: descriptor
 
 			// Write digest query database partition
 			log.Println("Writing digest query partition")
@@ -400,11 +379,21 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 				return err
 			}
 			digestBucket, err := digestTopBucket.CreateBucketIfNotExists([]byte(digest))
-
 			if err != nil {
 				return err
 			}
-			_, err = digestBucket.CreateBucketIfNotExists([]byte(repo.Named().Name()))
+			desc := ocispec.Descriptor{
+				MediaType:   man.MediaType,
+				Size:        int64(len(payload)),
+				Digest:      digest,
+				Annotations: man.Annotations,
+			}
+			desc.Annotations["namespaceHint"] = repo.Named().Name()
+			descJSON, err := json.Marshal(desc)
+			if err != nil {
+				return err
+			}
+			_, err = digestBucket.CreateBucketIfNotExists(descJSON)
 			if err != nil {
 				return err
 			}
@@ -413,8 +402,7 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 			// - Top level bucket: "links"
 			//   - Nested bucket: digest (link target)
 			//     - Nested bucket: digest (parent)
-			//       - Nested bucket: registryHint
-			//         - Nested bucket: namespaceHint
+			//       - Nested bucket:  target descriptor
 
 			// Write link lookup database partition
 
@@ -448,71 +436,14 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 						return err
 					}
 
-					log.Println("in linker bucket")
-
-					var registry string
-					var namespace string
-
-					var ldata map[string]interface{}
-					if attribs != nil {
-						hints := linkAttribs["core-link"]
-						log.Println("Starting hints if")
-						if hints != nil {
-							for _, hint := range hints {
-
-								err = json.Unmarshal(hint, &ldata)
-								if err != nil {
-									return err
-								}
-								ld, _ := json.Marshal(ldata)
-								log.Printf("ldata: %v", string(ld))
-
-								if data["registryHint"] != "" {
-									registryHint, err := json.Marshal(data["registryHint"])
-									if err != nil {
-										return err
-									}
-									registry = string(registryHint)
-								}
-								if data["registryHint"] == "" {
-
-									registry = "none"
-								}
-								if data["namespaceHint"] != "" {
-									namespaceHint, err := json.Marshal(data["namespaceHint"])
-									if err != nil {
-										return err
-									}
-									namespace = string(namespaceHint)
-								}
-								if data["namespaceHint"] == "" {
-									namespace = "none"
-								}
-							}
-						} else {
-							log.Printf("No hints")
-							namespace = "none"
-							registry = "none"
-						}
-
-					} else {
-						log.Printf("No hints")
-						namespace = "none"
-						registry = "none"
-					}
-
-					registryHintBucket, err := linkerBucket.CreateBucketIfNotExists([]byte(registry))
+					linkTargetDescriptor, err := json.Marshal(link)
 					if err != nil {
 						return err
 					}
-
-					log.Println("in registry bucket")
-
-					_, err = registryHintBucket.CreateBucketIfNotExists([]byte(namespace))
+					_, err = linkerBucket.CreateBucketIfNotExists(linkTargetDescriptor)
 					if err != nil {
 						return err
 					}
-					log.Println("in namespace bucket")
 
 					return nil
 				}

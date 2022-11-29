@@ -44,7 +44,8 @@ func (ah *attributesHandler) GetAttributes(w http.ResponseWriter, r *http.Reques
 	values := r.URL.Query()
 
 	var manifest v1.Index
-	queryResults := make(map[digest.Digest]map[string]string)
+	manifest.SchemaVersion = 2
+	queryResults := make(map[digest.Digest][]v1.Descriptor)
 
 	// Construct attributes query for database input
 	if attributes := values.Get(AttributesParamKey); attributes != "" {
@@ -74,7 +75,7 @@ func (ah *attributesHandler) GetAttributes(w http.ResponseWriter, r *http.Reques
 
 		// Filter the query
 		filter := make(map[digest.Digest]map[string]map[string][]json.RawMessage)
-		unfilteredResults := make(map[digest.Digest]map[string]string)
+		unfilteredResults := make(map[digest.Digest][]v1.Descriptor)
 
 		logger.Debugln("Results found, filtering...")
 
@@ -92,9 +93,12 @@ func (ah *attributesHandler) GetAttributes(w http.ResponseWriter, r *http.Reques
 			schemaSet[result.Schema] = attributePairs
 			filter[result.Digest] = schemaSet
 
-			attributes := make(map[string]string)
-			//schema[result.Schema] = attrib
-			unfilteredResults[result.Digest] = attributes
+			desc := v1.Descriptor{
+				MediaType: v1.MediaTypeImageManifest,
+				Digest:    result.Digest,
+			}
+
+			unfilteredResults[result.Digest] = append(unfilteredResults[result.Digest], desc)
 		}
 
 		// Transform user submitted attribute query into a filterable format.
@@ -155,15 +159,7 @@ func (ah *attributesHandler) GetAttributes(w http.ResponseWriter, r *http.Reques
 		}
 
 		for linker, target := range resolvedLinks {
-			coreLink := make(map[string]string) // core-link/registryHint/NamespaceHints
-			t, err := json.Marshal(target)
-			if err != nil {
-				ah.Errors = append(ah.Errors, errcode.ErrorCodeUnknown.WithDetail(err))
-				return
-			}
-			logger.Infof("link target: %v", string(t))
-			coreLink["core-link"] = string(t)
-			queryResults[linker] = coreLink
+			queryResults[linker] = append(queryResults[linker], target...)
 		}
 	}
 
@@ -177,7 +173,7 @@ func (ah *attributesHandler) GetAttributes(w http.ResponseWriter, r *http.Reques
 		digests = append(digests, k.String())
 		logger.Infof("Adding digest: %v to digest query", k.String())
 	}
-
+	
 	resolvedDigests, err := uor.DigestQuery(digests, ah.database)
 	if err != nil {
 		ah.Errors = append(ah.Errors, errcode.ErrorCodeUnknown.WithDetail(err))
@@ -185,34 +181,13 @@ func (ah *attributesHandler) GetAttributes(w http.ResponseWriter, r *http.Reques
 	}
 
 	for _, target := range resolvedDigests {
-		localNamespaces := make(map[string]string) // core-link/registryHint/NamespaceHints
-		t, err := json.Marshal(target)
-		if err != nil {
-			ah.Errors = append(ah.Errors, errcode.ErrorCodeUnknown.WithDetail(err))
-			return
-		}
-		localNamespaces["LocalNamespaces"] = string(t)
-		queryResults[target.Target] = localNamespaces
+		queryResults[target.Digest] = append(queryResults[target.Digest], target)
 	}
 
 	// Write the index manifest with the resolved descriptors
-	for digest, result := range queryResults {
-
-		ann, _ := json.Marshal(result)
-		uorAttrib := make(map[string]string)
-		uorAttrib["uor.attributes"] = string(ann)
-		desc := v1.Descriptor{
-			MediaType:   v1.MediaTypeImageIndex,
-			Size:        0,
-			Digest:      digest,
-			Annotations: uorAttrib,
-			Platform:    nil,
-			URLs:        nil,
-		}
-		manifest.Manifests = append(manifest.Manifests, desc)
+	for _, result := range queryResults {
+		manifest.Manifests = append(manifest.Manifests, result...)
 	}
-
-	manifest.SchemaVersion = 2
 
 	// Return the response to the caller
 	w.Header().Set("Content-Type", "application/json")

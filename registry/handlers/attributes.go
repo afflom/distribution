@@ -15,7 +15,7 @@ import (
 
 const (
 	AttributesParamKey = "attributes"
-	DigestParamKey     = "digest"
+	DigestParamKey     = "digests"
 	LinkParamKey       = "links"
 )
 

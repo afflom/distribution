@@ -215,6 +215,9 @@ func (i Indexer) IngestMetadata(manifest distribution.Manifest, digest digest.Di
 				Digest:      digest,
 				Annotations: man.Annotations,
 			}
+			if desc.Annotations == nil {
+				desc.Annotations = map[string]string{}
+			}
 			desc.Annotations["namespaceHint"] = repository.Named().Name()
 			descJSON, err := json.Marshal(desc)
 			if err != nil {
@@ -382,7 +385,7 @@ func (i Indexer) SearchByDigest(digests []string) ([]v1.Descriptor, error) {
 		for _, ld := range digests {
 			digest, err := digest.Parse(ld)
 			if err != nil {
-				return err
+				return fmt.Errorf("error parsing digest %s: %w", ld, err)
 			}
 			digestBucket := digestsBucket.Bucket([]byte(digest))
 			if digestBucket == nil {
@@ -425,7 +428,7 @@ func (i Indexer) SearchByLink(digests []string) (metadata.Links, error) {
 		for _, ld := range digests {
 			dgst, err := digest.Parse(ld)
 			if err != nil {
-				return err
+				return fmt.Errorf("error parsing digest %s: %w", ld, err)
 			}
 
 			targetBucket := linksBucket.Bucket([]byte(dgst))

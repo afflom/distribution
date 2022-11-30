@@ -173,22 +173,16 @@ func (ah *attributesHandler) GetAttributes(w http.ResponseWriter, r *http.Reques
 		digests = append(digests, k.String())
 		logger.Infof("Adding digest: %v to digest query", k.String())
 	}
-	
-	resolvedDigests, err := uor.DigestQuery(digests, ah.database)
+
+	resolvedDescriptors, err := uor.DigestQuery(digests, ah.database)
 	if err != nil {
 		ah.Errors = append(ah.Errors, errcode.ErrorCodeUnknown.WithDetail(err))
 		return
 	}
 
-	for _, target := range resolvedDigests {
-		queryResults[target.Digest] = append(queryResults[target.Digest], target)
-	}
-
 	// Write the index manifest with the resolved descriptors
-	for _, result := range queryResults {
-		manifest.Manifests = append(manifest.Manifests, result...)
-	}
-
+	manifest.Manifests = append(manifest.Manifests, resolvedDescriptors...)
+	
 	// Return the response to the caller
 	w.Header().Set("Content-Type", "application/json")
 	enc := json.NewEncoder(w)

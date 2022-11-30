@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"expvar"
 	"fmt"
-	"log"
 	"math"
 	"math/big"
 	"net"
@@ -17,6 +16,13 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	events "github.com/docker/go-events"
+	"github.com/docker/go-metrics"
+	"github.com/docker/libtrust"
+	"github.com/gomodule/redigo/redis"
+	"github.com/gorilla/mux"
+	"github.com/sirupsen/logrus"
 
 	"github.com/distribution/distribution/v3"
 	"github.com/distribution/distribution/v3/configuration"
@@ -38,14 +44,9 @@ import (
 	storagedriver "github.com/distribution/distribution/v3/registry/storage/driver"
 	"github.com/distribution/distribution/v3/registry/storage/driver/factory"
 	storagemiddleware "github.com/distribution/distribution/v3/registry/storage/driver/middleware"
+	"github.com/distribution/distribution/v3/registry/storage/metadata"
+	"github.com/distribution/distribution/v3/registry/storage/metadata/boltdb"
 	"github.com/distribution/distribution/v3/version"
-	events "github.com/docker/go-events"
-	"github.com/docker/go-metrics"
-	"github.com/docker/libtrust"
-	"github.com/gomodule/redigo/redis"
-	"github.com/gorilla/mux"
-	"github.com/sirupsen/logrus"
-	bolt "go.etcd.io/bbolt"
 )
 
 // randomSecretSize is the number of random bytes to generate if no secret
@@ -92,7 +93,7 @@ type App struct {
 	// readOnly is true if the registry is in a read-only maintenance mode
 	readOnly bool
 
-	database *bolt.DB
+	indexer metadata.Indexer
 }
 
 // NewApp takes a configuration and returns a configured app, ready to serve
@@ -313,12 +314,12 @@ func NewApp(ctx context.Context, config *configuration.Configuration) *App {
 		}
 	}
 
-	db, err := bolt.Open("bolt-db", 0666, nil)
+	indexer, err := boltdb.NewBoltDBIndexer("bolt-db")
 	if err != nil {
-		log.Fatal(err)
+		panic(err)
 	}
-
-	app.database = db
+	
+	app.indexer = indexer
 
 	if app.registry == nil {
 		// configure the registry if no cache section is available.

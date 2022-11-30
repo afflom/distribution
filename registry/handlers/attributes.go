@@ -11,7 +11,6 @@ import (
 
 	dcontext "github.com/distribution/distribution/v3/context"
 	"github.com/distribution/distribution/v3/registry/api/errcode"
-	"github.com/distribution/distribution/v3/uor"
 )
 
 const (
@@ -67,7 +66,7 @@ func (ah *attributesHandler) GetAttributes(w http.ResponseWriter, r *http.Reques
 		}
 
 		// Query database for attributes
-		results, err := uor.AttributeQuery(attributeMap, ah.database)
+		results, err := ah.indexer.SearchByAttribute(attributeMap)
 		if err != nil {
 			ah.Errors = append(ah.Errors, errcode.ErrorCodeUnknown.WithDetail(err))
 			return
@@ -152,7 +151,7 @@ func (ah *attributesHandler) GetAttributes(w http.ResponseWriter, r *http.Reques
 		logger.Debugf("resolving %v", string(ln))
 
 		logger.Debug("query was split")
-		resolvedLinks, err := uor.LinkQuery(links, ah.database)
+		resolvedLinks, err := ah.indexer.SearchByLink(links)
 		if err != nil {
 			ah.Errors = append(ah.Errors, errcode.ErrorCodeUnknown.WithDetail(err))
 			return
@@ -174,7 +173,7 @@ func (ah *attributesHandler) GetAttributes(w http.ResponseWriter, r *http.Reques
 		logger.Infof("Adding digest: %v to digest query", k.String())
 	}
 
-	resolvedDescriptors, err := uor.DigestQuery(digests, ah.database)
+	resolvedDescriptors, err := ah.indexer.SearchByDigest(digests)
 	if err != nil {
 		ah.Errors = append(ah.Errors, errcode.ErrorCodeUnknown.WithDetail(err))
 		return
@@ -182,7 +181,7 @@ func (ah *attributesHandler) GetAttributes(w http.ResponseWriter, r *http.Reques
 
 	// Write the index manifest with the resolved descriptors
 	manifest.Manifests = append(manifest.Manifests, resolvedDescriptors...)
-	
+
 	// Return the response to the caller
 	w.Header().Set("Content-Type", "application/json")
 	enc := json.NewEncoder(w)

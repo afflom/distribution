@@ -1,4 +1,4 @@
-package uor
+package boltdb
 
 import (
 	"encoding/json"
@@ -14,206 +14,35 @@ import (
 	bolt "go.etcd.io/bbolt"
 
 	"github.com/distribution/distribution/v3"
+	"github.com/distribution/distribution/v3/context"
+	"github.com/distribution/distribution/v3/registry/storage/metadata"
 )
 
-type AttributeSet map[string][]json.RawMessage
+const (
+	linksBucket  = "links"
+	digestBucket = "digests"
+)
 
-type ResultSet []*Result
-
-type Result struct {
-	Schema    string              `json:"version"`
-	AttribKey string              `json:"attribkey"`
-	AttribVal json.RawMessage     `json:"attribval"`
-	Digest    digest.Digest       `json:"digest"`
-	Location  map[string][]string `json:"location"`
+// Indexer is a boltdb metadata indexer.
+type Indexer struct {
+	rootDir string
+	db      *bolt.DB
+	logger  *context.Logger
 }
 
-type Links map[digest.Digest][]ocispec.Descriptor
-
-func LinkQuery(digests []string, db *bolt.DB) (Links, error) {
-	links := make(Links)
-	if len(digests) == 0 {
-		return links, nil
-	}
-
-	if err := db.View(func(tx *bolt.Tx) error {
-		linksBucket := tx.Bucket([]byte("links"))
-		if linksBucket == nil {
-			return fmt.Errorf("links not found")
-		}
-
-		for _, ld := range digests {
-			dgst, err := digest.Parse(ld)
-			if err != nil {
-				return err
-			}
-
-			targetBucket := linksBucket.Bucket([]byte(dgst))
-			if targetBucket == nil {
-				return fmt.Errorf("digest not found")
-			}
-
-			linkerCursor := targetBucket.Cursor()
-			for l, _ := linkerCursor.First(); l != nil; l, _ = linkerCursor.Next() {
-				parsedDigest, err := digest.Parse(string(l))
-				if err != nil {
-					return err
-				}
-				linkerBucket := targetBucket.Bucket(l)
-				log.Printf("in linker bucket: %v", string(l))
-
-				descriptorCursor := linkerBucket.Cursor()
-				var descriptors []ocispec.Descriptor
-
-				for r, _ := descriptorCursor.First(); r != nil; r, _ = descriptorCursor.Next() {
-					var descriptor ocispec.Descriptor
-					if err := json.Unmarshal(r, &descriptor); err != nil {
-						return err
-					}
-					descriptors = append(descriptors, descriptor)
-				}
-				links[parsedDigest] = descriptors
-			}
-		}
-		return nil
-	}); err != nil {
-		return links, err
-	}
-	return links, nil
-}
-
-func DigestQuery(digests []string, db *bolt.DB) ([]ocispec.Descriptor, error) {
-	if len(digests) == 0 {
-		return nil, nil
-	}
-
-	var targets []ocispec.Descriptor
-
-	if err := db.View(func(tx *bolt.Tx) error {
-		digestsBucket := tx.Bucket([]byte("digests"))
-		if digestsBucket == nil {
-			return fmt.Errorf("digests not found")
-		}
-
-		for _, ld := range digests {
-			digest, err := digest.Parse(ld)
-			if err != nil {
-				return err
-			}
-			digestBucket := digestsBucket.Bucket([]byte(digest))
-			if digestBucket == nil {
-				return fmt.Errorf("digest not found")
-			}
-
-			descriptorCursor := digestBucket.Cursor()
-			log.Println(descriptorCursor.Bucket().Stats())
-			for n, _ := descriptorCursor.First(); n != nil; n, _ = descriptorCursor.Next() {
-				log.Printf("found %s", string(n))
-				var desc ocispec.Descriptor
-				if err := json.Unmarshal(n, &desc); err != nil {
-					return err
-				}
-				targets = append(targets, desc)
-				log.Printf("Resolved digest %v to: %v", digest, string(n))
-			}
-
-		}
-		log.Println(targets)
-		return nil
-	}); err != nil {
+// NewBoltDBIndexer returns a boltdb implementation of the metadata.Indexer
+func NewBoltDBIndexer(path string) (metadata.Indexer, error) {
+	db, err := bolt.Open(path, 0600, nil)
+	if err != nil {
 		return nil, err
 	}
-	return targets, nil
-
+	return Indexer{
+		rootDir: path,
+		db:      db,
+	}, nil
 }
 
-// AttributeQuery returns a ResulSet from an attribute Query of boltdb
-func AttributeQuery(attribquery map[string]json.RawMessage, db *bolt.DB) (ResultSet, error) {
-
-	attribs := make(AttributeSet)
-
-	for k, v := range attribquery {
-
-		attribs[k] = append(attribs[k], v)
-	}
-
-	var resultSet ResultSet
-
-	log.Printf("Attribs: %s", attribs)
-	for schemaid, attributeValues := range attribs {
-		log.Printf("Key: %s, Val: %s", schemaid, attributeValues)
-		// Open a new read-only transaction
-		if err := db.View(func(tx *bolt.Tx) error {
-			log.Printf("Transaction Started")
-			// Parse the schema ID from the key name
-			// Enter the schema id bucket
-			schemaBucket := tx.Bucket([]byte(schemaid))
-			if schemaBucket == nil {
-				return fmt.Errorf("no matching records found for schema: %v", schemaid)
-			}
-			log.Printf("schema: %v", schemaid)
-			// Enter the key name bucket
-			var data map[string]interface{}
-
-			for i, pair := range attributeValues {
-				if err := json.Unmarshal(pair, &data); err != nil {
-					return err
-				}
-				log.Printf("Data: %v", data)
-				for keyname, value := range data {
-
-					log.Printf("Attribute key%v: %v", i, keyname)
-					attributeKeyBucket := schemaBucket.Bucket([]byte(keyname))
-					if attributeKeyBucket == nil {
-						continue
-					}
-					v, err := json.Marshal(&value)
-					if err != nil {
-						return err
-					}
-					log.Printf("Attribute key%v, Value: %v", i, string(v))
-
-					// Enter the value bucket
-					valueBucket := attributeKeyBucket.Bucket(v)
-					if valueBucket == nil {
-						continue
-					}
-					// query for kv pairs in the value bucket
-					digestCursor := valueBucket.Cursor()
-					// cursor loop returns namespace and digest of the match
-					log.Printf("bucket stats: %v", digestCursor.Bucket().Stats().KeyN)
-					for d, _ := digestCursor.First(); d != nil; d, _ = digestCursor.Next() {
-						log.Printf("Found Digest: %v", string(d))
-						digest, err := digest.Parse(string(d))
-						if err != nil {
-							return err
-						}
-						err = digest.Validate()
-						if err != nil {
-							return err
-						}
-						result := Result{
-							Schema:    schemaid,
-							AttribKey: keyname,
-							AttribVal: v,
-							Digest:    digest,
-						}
-						resultSet = append(resultSet, &result)
-					}
-
-					//fmt.Printf("Attribute: %s, Value:  %s, Manifest: %s", ak.Get([]byte(k)), av, value.Get([]byte(digest)))
-				}
-			}
-			return nil
-		}); err != nil {
-			return nil, err
-		}
-	}
-	return resultSet, nil
-}
-
-func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribution.Repository, db *bolt.DB) error {
-
+func (i Indexer) IngestMetadata(manifest distribution.Manifest, digest digest.Digest, repository distribution.Repository) error {
 	log.Println("Writing to database")
 	// Get manifest
 	_, payload, err := manifest.Payload()
@@ -238,7 +67,6 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 	for k, v := range man.Annotations {
 		if k == "uor.attributes" {
 			log.Println("uor attributes found")
-
 			attrs, err := convertAnnotationsToAttributes(v)
 			if err != nil {
 				return err
@@ -256,7 +84,6 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 			}
 
 			// Get link attributes
-
 			for _, link := range links {
 				for k, v := range link.Annotations {
 					if k == "uor.attributes" {
@@ -316,7 +143,7 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 
 	for schemaid, attributes := range attribs {
 
-		if err := db.Update(func(tx *bolt.Tx) error {
+		if err := i.db.Update(func(tx *bolt.Tx) error {
 			log.Println("started update transaction")
 			// Create schema ID bucket
 			schemaBucket, err := tx.CreateBucketIfNotExists([]byte(schemaid))
@@ -388,7 +215,7 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 				Digest:      digest,
 				Annotations: man.Annotations,
 			}
-			desc.Annotations["namespaceHint"] = repo.Named().Name()
+			desc.Annotations["namespaceHint"] = repository.Named().Name()
 			descJSON, err := json.Marshal(desc)
 			if err != nil {
 				return err
@@ -456,9 +283,190 @@ func WriteDB(manifest distribution.Manifest, digest digest.Digest, repo distribu
 	return nil
 }
 
-// tempfile returns a temporary file path.
+func (i Indexer) SearchByAttribute(attributes map[string]json.RawMessage) (metadata.ResultSet, error) {
+	attribs := make(AttributeSet)
+
+	for k, v := range attributes {
+
+		attribs[k] = append(attribs[k], v)
+	}
+
+	var resultSet metadata.ResultSet
+
+	log.Printf("Attribs: %s", attribs)
+	for schemaid, attributeValues := range attribs {
+		log.Printf("Key: %s, Val: %s", schemaid, attributeValues)
+		// Open a new read-only transaction
+		if err := i.db.View(func(tx *bolt.Tx) error {
+			log.Printf("Transaction Started")
+			// Parse the schema ID from the key name
+			// Enter the schema id bucket
+			schemaBucket := tx.Bucket([]byte(schemaid))
+			if schemaBucket == nil {
+				return fmt.Errorf("no matching records found for schema: %v", schemaid)
+			}
+			log.Printf("schema: %v", schemaid)
+			// Enter the key name bucket
+			var data map[string]interface{}
+
+			for i, pair := range attributeValues {
+				if err := json.Unmarshal(pair, &data); err != nil {
+					return err
+				}
+				log.Printf("Data: %v", data)
+				for keyname, value := range data {
+
+					log.Printf("Attribute key%v: %v", i, keyname)
+					attributeKeyBucket := schemaBucket.Bucket([]byte(keyname))
+					if attributeKeyBucket == nil {
+						continue
+					}
+					v, err := json.Marshal(&value)
+					if err != nil {
+						return err
+					}
+					log.Printf("Attribute key%v, Value: %v", i, string(v))
+
+					// Enter the value bucket
+					valueBucket := attributeKeyBucket.Bucket(v)
+					if valueBucket == nil {
+						continue
+					}
+					// query for kv pairs in the value bucket
+					digestCursor := valueBucket.Cursor()
+					// cursor loop returns namespace and digest of the match
+					log.Printf("bucket stats: %v", digestCursor.Bucket().Stats().KeyN)
+					for d, _ := digestCursor.First(); d != nil; d, _ = digestCursor.Next() {
+						log.Printf("Found Digest: %v", string(d))
+						digest, err := digest.Parse(string(d))
+						if err != nil {
+							return err
+						}
+						err = digest.Validate()
+						if err != nil {
+							return err
+						}
+						result := metadata.Result{
+							Schema:    schemaid,
+							AttribKey: keyname,
+							AttribVal: v,
+							Digest:    digest,
+						}
+						resultSet = append(resultSet, &result)
+					}
+
+					//fmt.Printf("Attribute: %s, Value:  %s, Manifest: %s", ak.Get([]byte(k)), av, value.Get([]byte(digest)))
+				}
+			}
+			return nil
+		}); err != nil {
+			return nil, err
+		}
+	}
+	return resultSet, nil
+}
+
+func (i Indexer) SearchByDigest(digests []string) ([]v1.Descriptor, error) {
+	if len(digests) == 0 {
+		return nil, nil
+	}
+
+	var targets []ocispec.Descriptor
+
+	if err := i.db.View(func(tx *bolt.Tx) error {
+		digestsBucket := tx.Bucket([]byte("digests"))
+		if digestsBucket == nil {
+			return fmt.Errorf("digests not found")
+		}
+
+		for _, ld := range digests {
+			digest, err := digest.Parse(ld)
+			if err != nil {
+				return err
+			}
+			digestBucket := digestsBucket.Bucket([]byte(digest))
+			if digestBucket == nil {
+				return fmt.Errorf("digest not found")
+			}
+
+			descriptorCursor := digestBucket.Cursor()
+			log.Println(descriptorCursor.Bucket().Stats())
+			for n, _ := descriptorCursor.First(); n != nil; n, _ = descriptorCursor.Next() {
+				log.Printf("found %s", string(n))
+				var desc ocispec.Descriptor
+				if err := json.Unmarshal(n, &desc); err != nil {
+					return err
+				}
+				targets = append(targets, desc)
+				log.Printf("Resolved digest %v to: %v", digest, string(n))
+			}
+
+		}
+		log.Println(targets)
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return targets, nil
+}
+
+func (i Indexer) SearchByLink(digests []string) (metadata.Links, error) {
+	links := make(metadata.Links)
+	if len(digests) == 0 {
+		return links, nil
+	}
+
+	if err := i.db.View(func(tx *bolt.Tx) error {
+		linksBucket := tx.Bucket([]byte("links"))
+		if linksBucket == nil {
+			return fmt.Errorf("links not found")
+		}
+
+		for _, ld := range digests {
+			dgst, err := digest.Parse(ld)
+			if err != nil {
+				return err
+			}
+
+			targetBucket := linksBucket.Bucket([]byte(dgst))
+			if targetBucket == nil {
+				return fmt.Errorf("digest not found")
+			}
+
+			linkerCursor := targetBucket.Cursor()
+			for l, _ := linkerCursor.First(); l != nil; l, _ = linkerCursor.Next() {
+				parsedDigest, err := digest.Parse(string(l))
+				if err != nil {
+					return err
+				}
+				linkerBucket := targetBucket.Bucket(l)
+				log.Printf("in linker bucket: %v", string(l))
+
+				descriptorCursor := linkerBucket.Cursor()
+				var descriptors []ocispec.Descriptor
+
+				for r, _ := descriptorCursor.First(); r != nil; r, _ = descriptorCursor.Next() {
+					var descriptor ocispec.Descriptor
+					if err := json.Unmarshal(r, &descriptor); err != nil {
+						return err
+					}
+					descriptors = append(descriptors, descriptor)
+				}
+				links[parsedDigest] = descriptors
+			}
+		}
+		return nil
+	}); err != nil {
+		return links, err
+	}
+	return links, nil
+}
+
+type AttributeSet map[string][]json.RawMessage
+
+// tempFile returns a temporary file path.
 // todo(afflom): create the database file in the /v3/ directory adjacent to the /v2/ directory
-func Tempfile() string {
+func tempFile() string {
 	f, err := ioutil.TempFile("", "bolt-")
 	if err != nil {
 		panic(err)
@@ -487,7 +495,7 @@ func convertAnnotationsToAttributes(annotations string) (AttributeSet, error) {
 			return specAttributes, err
 		}
 		if key == "" {
-			key = "ai"
+			key = "unknown"
 		}
 		specAttributes[key] = append(specAttributes[key], jsonValue)
 	}
